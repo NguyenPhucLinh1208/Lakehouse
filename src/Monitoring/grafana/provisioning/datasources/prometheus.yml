@@ -1,0 +1,33 @@
+# config file version
+apiVersion: 1
+
+# list of datasources to insert/update depending
+# what's available in the database
+datasources:
+  # <string, required> name of the datasource. Required
+  - name: Prometheus
+    # <string, required> datasource type. Required
+    type: prometheus
+    # <string, required> access mode. proxy or direct (Server or Browser in the UI). Required
+    access: proxy
+    # <string> url
+    url: http://prometheus:9090 # Sử dụng tên service trong docker-compose network
+    # <bool> allow users to edit dashboards calculated from this datasource
+    # editable: true
+    # <bool> mark as default datasource. Max one per org
+    isDefault: true
+    # <string> json object of data that will be encrypted.
+    # secureJsonData:
+    # <object>
+    jsonData:
+      # <string> The HTTP method to use for requests. POST or GET
+      httpMethod: POST
+      # <string> Specify the Prometheus instance type. (`prometheus`, `cortex`, `mimir`, `thanos`)
+      # prometheusType: prometheus
+      # <string> Specify the Prometheus flavor. (`prometheus`, `valkyrie`)
+      # prometheusVersion: 2.40.0
+      # <int> Timeout for HTTP requests in seconds.
+      timeout: 30
+      # <bool> Skip TLS verification.
+      tlsSkipVerify: true
+    version: 1

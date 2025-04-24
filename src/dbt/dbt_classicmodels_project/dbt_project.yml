@@ -1,0 +1,43 @@
+name: 'dbt_classicmodels_project'
+version: '1.0.0'
+config-version: 2
+profile: 'dbt_classicmodels_project' # links to profile in ~/.dbt/profiles.yml
+
+flags:
+    send_anonymous_usage_stats: false
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets: ["target", "dbt_packages", "logs"]
+
+models:
+  dbt_classicmodels_project:
+    +materialized: view       # Mặc định cho TOÀN BỘ dự án
+    staging:                  # Áp dụng cho models/staging/ VÀ CON CỦA NÓ
+      +schema: staging          
+      postgres_classicmodels: # Áp dụng CHO RIÊNG models/staging/postgres_classicmodels/
+        +tags: ['staging', 'postgres'] 
+    intermediate:             # Áp dụng cho models/intermediate/
+      +schema: intermediate     
+      +materialized: ephemeral  # Ghi đè mặc định 'view'
+      +tags: ['intermediate'] 
+    marts:                    # Áp dụng cho models/marts/ VÀ CON CỦA NÓ
+      +schema: marts            
+      +materialized: table      # Ghi đè mặc định 'view'
+      core:                   # Áp dụng CHO RIÊNG models/marts/core/
+        +tags: ['core', 'marts']
+
+seeds:
+  dbt_classicmodels_project:
+    +schema: raw_static_data 
+    +tags: ['seed']
+    country_region_map:
+      +column_types:
+        country: varchar
+        region: varchar

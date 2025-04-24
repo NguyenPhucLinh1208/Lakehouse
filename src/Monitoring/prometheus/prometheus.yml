@@ -1,0 +1,38 @@
+global:
+  scrape_interval: 15s # Tần suất scrape mặc định
+  evaluation_interval: 15s # Tần suất đánh giá rules
+
+# Load rule files from directory (nếu có)
+# rule_files:
+#   - "/etc/prometheus/rules/*.yml"
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # Sử dụng tên service trong docker-compose network
+          - 'alertmanager:9093'
+
+scrape_configs:
+  # Scrape chính Prometheus
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090'] # Prometheus scrape chính nó
+
+  # Scrape Node Exporter (trên host chạy Docker)
+  - job_name: 'node-exporter'
+    static_configs:
+      # Sử dụng tên service trong docker-compose network
+      - targets: ['node-exporter:9100']
+
+  # Scrape Alertmanager
+  - job_name: 'alertmanager'
+    static_configs:
+      # Sử dụng tên service trong docker-compose network
+      - targets: ['alertmanager:9093']
+
+  # Thêm các job khác để scrape các exporter/ứng dụng của bạn ở đây
+  # - job_name: 'your_app_exporter'
+  #   static_configs:
+  #     - targets: ['your_app_exporter_hostname:port']

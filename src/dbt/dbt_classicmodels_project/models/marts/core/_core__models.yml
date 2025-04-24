@@ -1,0 +1,62 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: "Dimension table for customers. One row per customer. Includes lifetime value metrics."
+    columns:
+      - name: customer_id
+        description: "Unique identifier for the customer."
+        tests: [unique, not_null]
+      # Add descriptions and tests for other columns...
+      - name: lifetime_value_usd
+        description: "Total value of payments made by the customer."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between: { min_value: 0 }
+
+  - name: dim_products
+    description: "Dimension table for products."
+    columns:
+      - name: product_id
+        description: "Unique identifier for the product."
+        tests: [unique, not_null]
+      - name: product_line_name
+        description: "Name of the product line."
+        tests: [not_null]
+
+  - name: dim_employees
+    description: "Dimension table for employees, including reporting hierarchy."
+    columns:
+      - name: employee_id
+        tests: [unique, not_null]
+      - name: manager_id
+        tests:
+          - relationships: { to: ref('dim_employees'), field: employee_id } # Self-referencing FK test
+
+  - name: fct_orders
+    description: "Fact table containing order line items. Grain: one row per product per order."
+    tests: # Model level tests
+      - dbt_utils.expression_is_true: # Example: Ensure total amount is positive
+          expression: "order_total_usd >= 0"
+    columns:
+      - name: order_item_sk # Surrogate key
+        tests: [unique, not_null]
+      - name: order_id
+        tests: [not_null]
+      - name: customer_id
+        tests: [not_null, relationships: { to: ref('dim_customers'), field: customer_id }]
+      - name: product_id
+        tests: [not_null, relationships: { to: ref('dim_products'), field: product_id }]
+      - name: employee_id # Sales rep
+        tests: [relationships: { to: ref('dim_employees'), field: employee_id }]
+      - name: order_date_key # FK to dim_dates (YYYYMMDD format)
+        tests: [not_null] # Add relationship test if dim_dates exists
+      - name: quantity_ordered
+        tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between: { min_value: 1 }
+      - name: price_each_usd
+        tests: [not_null]
+      - name: order_line_total_usd
+        description: "Calculated total for the line item (quantity * price)."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between: { min_value: 0 }

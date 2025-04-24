@@ -1,0 +1,78 @@
+services:
+  trino-coordinator:
+    image: trinodb/trino:474
+    container_name: trino-coordinator
+    hostname: trino-coordinator # Quan trọng cho discovery.uri
+    ports:
+      - "8080:8080"
+      # - "9081:9081" # Cổng JMX (tùy chọn)
+    networks:
+      - trino-net
+    volumes:
+      # Mount thư mục cấu hình của Coordinator
+      - ./etc/coordinator:/etc/trino
+      # - ./trino-data/coordinator/logs:/data/trino/logs # Logs/Heap Dumps (tùy chọn)
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    # restart: unless-stopped
+
+  trino-worker-1:
+    # PHẢI sử dụng CÙNG phiên bản Trino với Coordinator
+    image: trinodb/trino:474
+    container_name: trino-worker-1
+    hostname: trino-worker-1
+    networks:
+      - trino-net
+    volumes:
+      # Mount thư mục cấu hình của Worker
+      - ./etc/worker:/etc/trino
+      # - ./trino-data/worker-1/logs:/data/trino/logs # Logs/Heap Dumps (tùy chọn)
+    depends_on:
+      - trino-coordinator
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    restart: unless-stopped
+
+  trino-worker-2:
+    # PHẢI sử dụng CÙNG phiên bản Trino với Coordinator
+    image: trinodb/trino:474
+    container_name: trino-worker-2
+    hostname: trino-worker-2
+    networks:
+      - trino-net
+    volumes:
+      # Dùng chung cấu hình từ ./etc/worker
+      - ./etc/worker:/etc/trino
+      # - ./trino-data/worker-2/logs:/data/trino/logs # Logs/Heap Dumps (tùy chọn)
+    depends_on:
+      - trino-coordinator
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    restart: unless-stopped
+
+  trino-worker-3:
+    # PHẢI sử dụng CÙNG phiên bản Trino với Coordinator
+    image: trinodb/trino:474
+    container_name: trino-worker-3
+    hostname: trino-worker-3
+    networks:
+      - trino-net
+    volumes:
+      # Dùng chung cấu hình từ ./etc/worker
+      - ./etc/worker:/etc/trino
+      # - ./trino-data/worker-3/logs:/data/trino/logs # Logs/Heap Dumps (tùy chọn)
+    depends_on:
+      - trino-coordinator
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    restart: unless-stopped
+
+networks:
+  trino-net:
+    driver: bridge
+
+# volumes: # Định nghĩa volumes nếu dùng (tùy chọn)
+#   trino-coordinator-logs:
+#   trino-worker-1-logs:
+#   trino-worker-2-logs:
+#   trino-worker-3-logs:

@@ -1,0 +1,16 @@
+# --- Định nghĩa Network Dùng Chung ---
+# Tất cả các service trong lakehouse sẽ dùng mạng này để giao tiếp nội bộ
+networks:
+  lakehouse_internal_net: # Tên logic sử dụng trong các file compose
+    driver: bridge         # Driver mặc định, phù hợp cho single-host
+    name: lakehouse_net    # Tên thực tế của network trên Docker host (giúp cố định tên)
+
+# --- Định nghĩa Volumes Dùng Chung (Quản lý tập trung) ---
+
+# volumes:
+#   minio_data:          # Volume để lưu trữ dữ liệu cho MinIO
+#     driver: local        # Hoặc driver khác nếu bạn dùng volume plugin
+#   spark_apps:          # Ví dụ volume chứa các ứng dụng Spark
+#     driver: local
+#   # postgres_data:     # Ví dụ volume cho database nếu có
+#   # ... thêm các volume khác nếu cần

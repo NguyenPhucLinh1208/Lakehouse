@@ -1,0 +1,45 @@
+global:
+  # resolve_timeout: 5m # Thời gian chờ trước khi đánh dấu alert là resolved nếu không nhận được thông báo
+  # Các cấu hình global cho receivers (ví dụ: smtp, slack api url...)
+  # smtp_smarthost: 'localhost:25'
+  # smtp_from: 'alertmanager@example.org'
+  # slack_api_url: '<your_slack_webhook_url>'
+
+route:
+  group_by: ['alertname', 'job'] # Nhóm các alert giống tên, cùng job
+  group_wait: 30s           # Chờ 30s để thu thập các alert cùng nhóm
+  group_interval: 5m        # Gửi thông báo cho nhóm sau mỗi 5 phút nếu vẫn còn firing
+  repeat_interval: 1h       # Gửi lại thông báo sau mỗi giờ nếu vẫn còn firing
+  receiver: 'null'          # Receiver mặc định nếu không khớp route nào
+
+  # Có thể thêm các sub-route ở đây để định tuyến alert dựa trên labels
+  # routes:
+  #   - receiver: 'slack-notifications'
+  #     match:
+  #       severity: 'critical'
+  #   - receiver: 'email-notifications'
+  #     match:
+  #       severity: 'warning'
+
+receivers:
+  - name: 'null' # Receiver không làm gì cả, hữu ích khi mới bắt đầu
+
+  # Ví dụ receiver gửi qua webhook (thay bằng Slack, Email, PagerDuty...)
+  # - name: 'webhook-receiver'
+  #   webhook_configs:
+  #     - url: 'http://your-webhook-endpoint/' # Thay bằng URL của bạn
+  #       send_resolved: true
+
+  # Ví dụ receiver Slack
+  # - name: 'slack-notifications'
+  #   slack_configs:
+  #     - channel: '#your-alerts-channel'
+  #       send_resolved: true
+  #       # Thêm các trường khác như title, text...
+
+# inhibit_rules: # Có thể thêm các rule để ngăn chặn alert nếu alert khác đang active
+#   - target_match:
+#       severity: 'warning'
+#     source_match:
+#       severity: 'critical'
+#     equal: ['alertname', 'job', 'instance']
