@@ -1,0 +1,59 @@
+services:
+  # Dịch vụ Nessie Server
+  nessie:
+    # Sử dụng tag image cố định (hoặc phiên bản cụ thể bạn chọn)
+    image: ghcr.io/projectnessie/nessie:0.103.5
+    container_name: nessie_server
+    ports:
+      # Sử dụng port cố định
+      - "19120:19120"
+    environment:
+      # --- Cấu hình Backend Lưu trữ Trạng thái Nessie ---
+      - NESSIE_VERSION_STORE_TYPE=JDBC
+      # Sử dụng tên DB cố định
+      - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://nessie-postgres:5432/nessie_db
+      # Sử dụng biến từ file .env CHỈ cho user/password
+      - QUARKUS_DATASOURCE_USERNAME=${POSTGRES_USER}
+      - QUARKUS_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
+      - QUARKUS_DATASOURCE_DB_KIND=postgresql
+
+      # --- Cấu hình Xác thực ---
+      - QUARKUS_HTTP_AUTH_BASIC=false
+      - NESSIE_AUTHENTICATION_ENABLED=false
+
+    depends_on:
+      nessie-postgres:
+        condition: service_healthy
+    networks:
+      - lakehouse_internal_net
+
+  # Dịch vụ PostgreSQL làm Backend cho Nessie
+  nessie-postgres:
+    # Sử dụng tag image cố định (hoặc phiên bản cụ thể bạn chọn)
+    image: postgres:15
+    container_name: nessie_postgres_db
+    ports:
+      # Sử dụng port cố định (tùy chọn)
+      - "54321:5432"
+    environment:
+      # Sử dụng biến từ file .env CHỈ cho user/password
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      # Sử dụng tên DB cố định
+      - POSTGRES_DB=nessie_db
+    volumes:
+      - nessie-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Sử dụng biến $$POSTGRES_USER và tên DB cố định
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d nessie_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lakehouse_internal_net
+
+# Khai báo Named Volume
+volumes:
+  nessie-postgres-data:
+
+

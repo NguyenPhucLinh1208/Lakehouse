@@ -1,12 +1,9 @@
-import sys
-sys.path.append("/opt")
-
 from ScarpingPackage.brower_ui import init_debug_driver
 from ScarpingPackage.brower_no_ui import init_driver
 from ScarpingPackage.navigation import click_element, enter_text, get_text
 import time
 
-driver = init_debug_driver("http://chrome:4444/wd/hub")
+driver = init_debug_driver("http://localhost:4444/wd/hub")
 driver.get("https://vtv.vn/trong-nuoc.htm")
 
 click_element(driver, '//*[@id="admWrapsite"]/div[1]/div/div[1]/div[2]/div[1]')
