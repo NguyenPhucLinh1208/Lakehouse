@@ -1,0 +1,138 @@
+# Định nghĩa các volumes để lưu trữ dữ liệu MinIO một cách bền bỉ
+# Best Practice:
+# 1. Sử dụng Named Volumes: Docker quản lý, dễ dàng backup/restore/migrate.
+# 2. Mỗi 'ổ đĩa' ảo map vào 1 Volume riêng: Mô phỏng chính xác sự độc lập
+#    của ổ đĩa vật lý, đảm bảo Erasure Coding và Healing hoạt động đúng.
+# Tổng cộng: 4 nodes * 4 drives/node = 16 volumes.
+volumes:
+  minio1-data1: {}
+  minio1-data2: {}
+  minio1-data3: {}
+  minio1-data4: {}
+  minio2-data1: {}
+  minio2-data2: {}
+  minio2-data3: {}
+  minio2-data4: {}
+  minio3-data1: {}
+  minio3-data2: {}
+  minio3-data3: {}
+  minio3-data4: {}
+  minio4-data1: {}
+  minio4-data2: {}
+  minio4-data3: {}
+  minio4-data4: {}
+
+services:
+  # Định nghĩa service cho Node 1
+  minio1:
+    # Sử dụng image MinIO với tag cụ thể đã định nghĩa trong file .env
+    # ${MINIO_IMAGE_TAG} sẽ được Docker Compose thay thế bằng giá trị trong .env
+    image: minio/minio:${MINIO_IMAGE_TAG}
+    hostname: minio1 # Đặt hostname cho container
+    container_name: minio1 # Đặt tên container cụ thể
+    # Kết nối container này vào mạng tùy chỉnh 'lakehouse_internal_net'
+    networks:
+      - lakehouse_internal_net
+    # Map 4 volumes riêng biệt vào 4 đường dẫn trong container, mô phỏng 4 ổ đĩa
+    volumes:
+      - minio1-data1:/data1
+      - minio1-data2:/data2
+      - minio1-data3:/data3
+      - minio1-data4:/data4
+    # Chỉ expose port API (9000) và Console (9001) từ node này ra máy host
+    # Trong production, sẽ dùng Load Balancer thay vì expose trực tiếp.
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    # Sử dụng file .env để load các biến môi trường (credentials)
+    # Best Practice: Tách biệt secrets khỏi file compose.
+    env_file:
+      - .env
+    # Lệnh khởi động MinIO server ở chế độ distributed
+    # - `server`: Chạy chế độ server.
+    # - `http://minio{1...4}/data{1...4}`:
+    #    - `http://minio{1...4}`: Chỉ định tất cả các node trong cụm. Docker Compose sẽ dùng DNS nội bộ trên mạng 'lakehouse_internal_net' để phân giải tên service `minio1`, `minio2`... thành IP.
+    #    - `/data{1...4}`: Chỉ định 4 đường dẫn lưu trữ trên mỗi node.
+    # - `--console-address ":9001"`: Chỉ định port cho Console.
+    command: server http://minio{1...4}/data{1...4} --console-address ":9001"
+    # Healthcheck kiểm tra xem MinIO đã sẵn sàng chưa
+    healthcheck:
+      # Kiểm tra endpoint health của MinIO API bên trong container
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live"]
+      interval: 30s   # Kiểm tra mỗi 30 giây
+      timeout: 20s    # Chờ tối đa 20 giây cho phản hồi
+      retries: 3      # Thử lại 3 lần nếu thất bại
+      start_period: 10s # Chờ 10 giây sau khi container khởi động mới bắt đầu healthcheck
+    # Tự động khởi động lại container nếu nó bị dừng không mong muốn
+    restart: unless-stopped
+
+  # Định nghĩa service cho Node 2 (tương tự Node 1 nhưng không expose port)
+  minio2:
+    image: minio/minio:${MINIO_IMAGE_TAG}
+    hostname: minio2
+    container_name: minio2
+    networks:
+      - lakehouse_internal_net
+    volumes:
+      - minio2-data1:/data1
+      - minio2-data2:/data2
+      - minio2-data3:/data3
+      - minio2-data4:/data4
+    env_file:
+      - .env
+    command: server http://minio{1...4}/data{1...4} --console-address ":9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # Định nghĩa service cho Node 3
+  minio3:
+    image: minio/minio:${MINIO_IMAGE_TAG}
+    hostname: minio3
+    container_name: minio3
+    networks:
+      - lakehouse_internal_net
+    volumes:
+      - minio3-data1:/data1
+      - minio3-data2:/data2
+      - minio3-data3:/data3
+      - minio3-data4:/data4
+    env_file:
+      - .env
+    command: server http://minio{1...4}/data{1...4} --console-address ":9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # Định nghĩa service cho Node 4
+  minio4:
+    image: minio/minio:${MINIO_IMAGE_TAG}
+    hostname: minio4
+    container_name: minio4
+    networks:
+      - lakehouse_internal_net
+    volumes:
+      - minio4-data1:/data1
+      - minio4-data2:/data2
+      - minio4-data3:/data3
+      - minio4-data4:/data4
+    env_file:
+      - .env
+    command: server http://minio{1...4}/data{1...4} --console-address ":9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+# --- Kết thúc file docker-compose.yml ---

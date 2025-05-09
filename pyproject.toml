@@ -10,6 +10,7 @@ dependencies = [
     # Crawl data
     "requests==2.32.3",
 	"selenium==4.31.0",
+	"beautifulsoup4==4.13.4",
 ]
 
 [build-system]
