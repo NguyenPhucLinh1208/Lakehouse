@@ -4,7 +4,11 @@ from selenium.webdriver.chrome.options import Options
 def init_debug_driver(chrome_url):
     # Khởi tạo tùy chọn cho Chrome
     chrome_options = Options()
-    
+    # === CÀI ĐẶT PAGE LOAD STRATEGY ===
+    # 'normal': (Mặc định) Chờ toàn bộ trang tải xong.
+    # 'eager': Chờ DOM sẵn sàng (HTML được tải và phân tích), không chờ tài nguyên phụ.
+    # 'none': Trả về ngay sau khi nhận được HTML ban đầu.
+    chrome_options.page_load_strategy = 'eager'  # HOẶC 'none'    
     # Các tùy chọn cơ bản cho ổn định khi chạy trong Docker (nếu cần)
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")

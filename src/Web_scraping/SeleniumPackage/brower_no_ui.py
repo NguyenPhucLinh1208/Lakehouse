@@ -3,7 +3,12 @@ from selenium.webdriver.chrome.options import Options
 
 def init_driver(chrome_url):
     # Khởi tạo tùy chọn cho Chrome
-    chrome_options = Options() 
+    chrome_options = Options()
+    # === CÀI ĐẶT PAGE LOAD STRATEGY ===
+    # 'normal': (Mặc định) Chờ toàn bộ trang tải xong.
+    # 'eager': Chờ DOM sẵn sàng (HTML được tải và phân tích), không chờ tài nguyên phụ.
+    # 'none': Trả về ngay sau khi nhận được HTML ban đầu.
+    chrome_options.page_load_strategy = 'eager'  # HOẶC 'none'
     # Tùy chọn giúp tăng độ ổn định khi chạy trong Docker:
     chrome_options.add_argument("--no-sandbox")  # Vô hiệu hóa sandbox để tránh lỗi khi chạy trong container.
     chrome_options.add_argument("--disable-dev-shm-usage")  # Sử dụng bộ nhớ tạm thay vì shared memory (giảm lỗi bộ nhớ).

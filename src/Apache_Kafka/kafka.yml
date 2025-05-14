@@ -76,59 +76,59 @@ services:
     networks:
       - lakehouse_internal_net
 
-  kafka-connect:
-    image: confluentinc/cp-kafka-connect:7.9.0
-    container_name: kafka-connect
-    hostname: kafka-connect
-    ports:
-      # Map host port 8092 to internal REST API port 8083
-      - "8092:8083"
-    environment:
-      # Connect to Kafka using the internal PLAINTEXT listener (port 29092)
-      CONNECT_BOOTSTRAP_SERVERS: 'kafka-1:29092,kafka-2:29092,kafka-3:29092'
-      CONNECT_GROUP_ID: 'connect-cluster'
-      CONNECT_CONFIG_STORAGE_TOPIC: 'connect-configs'
-      CONNECT_OFFSET_STORAGE_TOPIC: 'connect-offsets'
-      CONNECT_STATUS_STORAGE_TOPIC: 'connect-status'
-      CONNECT_KEY_CONVERTER: 'io.confluent.connect.avro.AvroConverter'
-      CONNECT_VALUE_CONVERTER: 'io.confluent.connect.avro.AvroConverter'
-      # Connect to Schema Registry using its internal hostname and port
-      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
-      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
-      CONNECT_INTERNAL_KEY_CONVERTER: 'org.apache.kafka.connect.json.JsonConverter'
-      CONNECT_INTERNAL_VALUE_CONVERTER: 'org.apache.kafka.connect.json.JsonConverter'
-      CONNECT_PLUGIN_PATH: '/usr/share/java'
-      # Advertise the REST API using the host machine's accessible address (localhost) and mapped port (8092) - THIS REMAINS CORRECT
-      CONNECT_REST_ADVERTISED_HOST_NAME: 'localhost'
-      CONNECT_REST_ADVERTISED_PORT: '8092'
-    depends_on:
-      - kafka-1
-      - kafka-2
-      - kafka-3
-      - schema-registry
-    networks:
-      - lakehouse_internal_net
-
-  schema-registry:
-    image: confluentinc/cp-schema-registry:7.9.0
-    container_name: schema-registry
-    hostname: schema-registry
-    ports:
-      # Map host port 8091 to internal port 8081
-      - "8091:8081"
-    environment:
-      # Connect to Kafka using the internal PLAINTEXT listener (port 29092)
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'PLAINTEXT://kafka-1:29092,PLAINTEXT://kafka-2:29092,PLAINTEXT://kafka-3:29092'
-      # Hostname for internal resolution
-      SCHEMA_REGISTRY_HOST_NAME: 'schema-registry'
-      # Listen on all interfaces inside the container on port 8081
-      SCHEMA_REGISTRY_LISTENERS: 'http://0.0.0.0:8081'
-    depends_on:
-      - kafka-1
-      - kafka-2
-      - kafka-3
-    networks:
-      - lakehouse_internal_net
+  # kafka-connect:
+  #   image: confluentinc/cp-kafka-connect:7.9.0
+  #   container_name: kafka-connect
+  #   hostname: kafka-connect
+  #   ports:
+  #     # Map host port 8092 to internal REST API port 8083
+  #     - "8092:8083"
+  #   environment:
+  #     # Connect to Kafka using the internal PLAINTEXT listener (port 29092)
+  #     CONNECT_BOOTSTRAP_SERVERS: 'kafka-1:29092,kafka-2:29092,kafka-3:29092'
+  #     CONNECT_GROUP_ID: 'connect-cluster'
+  #     CONNECT_CONFIG_STORAGE_TOPIC: 'connect-configs'
+  #     CONNECT_OFFSET_STORAGE_TOPIC: 'connect-offsets'
+  #     CONNECT_STATUS_STORAGE_TOPIC: 'connect-status'
+  #     CONNECT_KEY_CONVERTER: 'io.confluent.connect.avro.AvroConverter'
+  #     CONNECT_VALUE_CONVERTER: 'io.confluent.connect.avro.AvroConverter'
+  #     # Connect to Schema Registry using its internal hostname and port
+  #     CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
+  #     CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
+  #     CONNECT_INTERNAL_KEY_CONVERTER: 'org.apache.kafka.connect.json.JsonConverter'
+  #     CONNECT_INTERNAL_VALUE_CONVERTER: 'org.apache.kafka.connect.json.JsonConverter'
+  #     CONNECT_PLUGIN_PATH: '/usr/share/java'
+  #     # Advertise the REST API using the host machine's accessible address (localhost) and mapped port (8092) - THIS REMAINS CORRECT
+  #     CONNECT_REST_ADVERTISED_HOST_NAME: 'localhost'
+  #     CONNECT_REST_ADVERTISED_PORT: '8092'
+  #   depends_on:
+  #     - kafka-1
+  #     - kafka-2
+  #     - kafka-3
+  #     - schema-registry
+  #   networks:
+  #     - lakehouse_internal_net
+  #
+  # schema-registry:
+  #   image: confluentinc/cp-schema-registry:7.9.0
+  #   container_name: schema-registry
+  #   hostname: schema-registry
+  #   ports:
+  #     # Map host port 8091 to internal port 8081
+  #     - "8091:8081"
+  #   environment:
+  #     # Connect to Kafka using the internal PLAINTEXT listener (port 29092)
+  #     SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'PLAINTEXT://kafka-1:29092,PLAINTEXT://kafka-2:29092,PLAINTEXT://kafka-3:29092'
+  #     # Hostname for internal resolution
+  #     SCHEMA_REGISTRY_HOST_NAME: 'schema-registry'
+  #     # Listen on all interfaces inside the container on port 8081
+  #     SCHEMA_REGISTRY_LISTENERS: 'http://0.0.0.0:8081'
+  #   depends_on:
+  #     - kafka-1
+  #     - kafka-2
+  #     - kafka-3
+  #   networks:
+  #     - lakehouse_internal_net
 
   akhq:
     image: tchiotludo/akhq:0.25.1
@@ -144,13 +144,13 @@ services:
             kafka-cluster: # Tên kết nối Kafka bạn đặt
               properties:
                 bootstrap.servers: "kafka-1:29092,kafka-2:29092,kafka-3:29092"
-              # Thêm cấu hình Schema Registry
-              schema-registry:
-                url: "http://schema-registry:8081" # URL nội bộ của Schema Registry
-              # Thêm cấu hình Kafka Connect
-              connect:
-                - name: "connect-cluster" # Tên hiển thị cho connect cluster trong AKHQ
-                  url: "http://kafka-connect:8083" # URL nội bộ của Kafka Connect REST API
+              # # Thêm cấu hình Schema Registry
+              # schema-registry:
+              #   url: "http://schema-registry:8081" # URL nội bộ của Schema Registry
+              # # Thêm cấu hình Kafka Connect
+              # connect:
+              #   - name: "connect-cluster" # Tên hiển thị cho connect cluster trong AKHQ
+              #     url: "http://kafka-connect:8083" # URL nội bộ của Kafka Connect REST API
     depends_on:
       - kafka-1
       - kafka-2

@@ -7,6 +7,8 @@ services:
     ports:
       # Sử dụng port cố định
       - "19120:19120"
+    env_file:
+      - .env
     environment:
       # --- Cấu hình Backend Lưu trữ Trạng thái Nessie ---
       - NESSIE_VERSION_STORE_TYPE=JDBC
@@ -35,6 +37,8 @@ services:
     ports:
       # Sử dụng port cố định (tùy chọn)
       - "54321:5432"
+    env_file:
+      - .env
     environment:
       # Sử dụng biến từ file .env CHỈ cho user/password
       - POSTGRES_USER=${POSTGRES_USER}

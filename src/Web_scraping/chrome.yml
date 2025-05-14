@@ -1,7 +1,7 @@
 services:
   chrome:
     image: selenium/standalone-chrome:124.0-20250414
-    shm_size: "4gb"
+    shm_size: "12gb"
     environment:
       - DBUS_SESSION_BUS_ADDRESS=/dev/null
     healthcheck:
