@@ -15,8 +15,8 @@ services:
       # Sử dụng tên DB cố định
       - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://nessie-postgres:5432/nessie_db
       # Sử dụng biến từ file .env CHỈ cho user/password
-      - QUARKUS_DATASOURCE_USERNAME=${POSTGRES_USER}
-      - QUARKUS_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
+      - QUARKUS_DATASOURCE_USERNAME=${POSTGRES_NESSIE_USER}
+      - QUARKUS_DATASOURCE_PASSWORD=${POSTGRES_NESSIE_PASSWORD}
       - QUARKUS_DATASOURCE_DB_KIND=postgresql
 
       # --- Cấu hình Xác thực ---
@@ -41,15 +41,15 @@ services:
       - .env
     environment:
       # Sử dụng biến từ file .env CHỈ cho user/password
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_USER=${POSTGRES_NESSIE_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_NESSIE_PASSWORD}
       # Sử dụng tên DB cố định
       - POSTGRES_DB=nessie_db
     volumes:
       - nessie-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      # Sử dụng biến $$POSTGRES_USER và tên DB cố định
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d nessie_db"]
+      # Sử dụng biến $$POSTGRES_NESSIE_USER và tên DB cố định
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_NESSIE_USER -d nessie_db"]
       interval: 10s
       timeout: 5s
       retries: 5

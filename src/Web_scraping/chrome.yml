@@ -1,23 +1,104 @@
 services:
-  chrome:
-    image: selenium/standalone-chrome:124.0-20250414
-    shm_size: "12gb"
-    environment:
-      - DBUS_SESSION_BUS_ADDRESS=/dev/null
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:4444/wd/hub/status || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+  selenium-hub:
+    image: selenium/hub:4.32.0
+    container_name: selenium-hub
     ports:
       - "4444:4444"
-      - "7900:7900"   
+    environment:
+      - GRID_MAX_SESSION=4
+      - GRID_NEW_SESSION_WAIT_TIMEOUT=300
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4444/wd/hub/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: always
-    networks: 
-      - lakehouse_internal_net 
+    networks:
+      - lakehouse_internal_net
 
+  chrome-node-1:
+    image: selenium/node-chrome:4.32.0
+    shm_size: "2gb"
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      - SE_NODE_GRID_URL=http://selenium-hub:4444
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
+      - DBUS_SESSION_BUS_ADDRESS=/dev/null
+      - SE_VNC_NO_PASSWORD=1
+    ports:
+      - "7901:7900"
+    depends_on:
+      selenium-hub:
+        condition: service_healthy
+    restart: always
+    networks:
+      - lakehouse_internal_net
 
-  
+  chrome-node-2:
+    image: selenium/node-chrome:4.32.0
+    shm_size: "2gb"
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      - SE_NODE_GRID_URL=http://selenium-hub:4444
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
+      - DBUS_SESSION_BUS_ADDRESS=/dev/null
+      - SE_VNC_NO_PASSWORD=1
+    ports:
+      - "7902:7900"
+    depends_on:
+      selenium-hub:
+        condition: service_healthy
+    restart: always
+    networks:
+      - lakehouse_internal_net
+
+  chrome-node-3:
+    image: selenium/node-chrome:4.32.0
+    shm_size: "2gb"
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      - SE_NODE_GRID_URL=http://selenium-hub:4444
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
+      - DBUS_SESSION_BUS_ADDRESS=/dev/null
+      - SE_VNC_NO_PASSWORD=1
+    ports:
+      - "7903:7900"
+    depends_on:
+      selenium-hub:
+        condition: service_healthy
+    restart: always
+    networks:
+      - lakehouse_internal_net
+
+  # chrome-node-4:
+  #   image: selenium/node-chrome:4.32.0
+  #   shm_size: "2gb"
+  #   environment:
+  #     - SE_EVENT_BUS_HOST=selenium-hub
+  #     - SE_EVENT_BUS_PUBLISH_PORT=4442
+  #     - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+  #     - SE_NODE_GRID_URL=http://selenium-hub:4444
+  #     - SE_NODE_MAX_SESSIONS=1
+  #     - SE_NODE_OVERRIDE_MAX_SESSIONS=true
+  #     - DBUS_SESSION_BUS_ADDRESS=/dev/null
+  #     - SE_VNC_NO_PASSWORD=1
+  #   ports:
+  #     - "7904:7900"
+  #   depends_on:
+  #     selenium-hub:
+  #       condition: service_healthy
+  #   restart: always
+  #   networks:
+  #     - lakehouse_internal_net
 
 

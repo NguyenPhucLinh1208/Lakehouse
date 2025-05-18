@@ -10,10 +10,11 @@ from selenium.webdriver.common.by import By
 
 from selenium.common.exceptions import ( 
     NoSuchElementException,
-    TimeoutException
+    TimeoutException,
+    StaleElementReferenceException                                     
 )
 
-from SeleniumPackage import (
+from Web_scraping.SeleniumPackage import (
     init_debug_driver, 
     init_driver,
     click_element
@@ -74,7 +75,7 @@ def create_url_vnexpress(index: int, start_date: str, end_date: str) -> str:
 
     return url_hoan_chinh
 
-def next_page_status(driver, timeout=10) -> bool:
+def next_page_status(driver) -> bool:
     """
     Thực hiện cuộn xuống dưới cùng, và kiểm tra nút next_page.
     """
@@ -117,7 +118,7 @@ def get_links_VnExpress(html_content: str, topic: str) -> list:
     """
     Lấy danh sách các bài báo trong cùng một page
     """
-    soup = BeautifulSoup(html_content, "html.parser")
+    soup = BeautifulSoup(html_content, "lxml")
     articles_data = []
 
     for article_tag in soup.find_all('article', class_='item-news-common'):
@@ -169,15 +170,21 @@ def get_content_article(driver, url: str) -> dict:
         y_kien_xpath = '//*[@id="box_comment_vne"]/div/div[1]/div/h3' 
 
         try:
-            element_to_scroll_to = WebDriverWait(driver, 3).until(
+            WebDriverWait(driver, 3).until(
                 EC.presence_of_element_located((By.XPATH, y_kien_xpath))
-            )
+            )            
+            element_to_scroll_to = driver.find_element(By.XPATH, y_kien_xpath)            
             driver.execute_script("arguments[0].scrollIntoView(true);", element_to_scroll_to)
             WebDriverWait(driver, 10).until(
-                EC.visibility_of(element_to_scroll_to)
+                EC.visibility_of_element_located((By.XPATH, y_kien_xpath))
             )
         except TimeoutException:
             logger.info(f"Trang '{url}' không có mục bình luận.")
+        except StaleElementReferenceException as e:
+            logger.warning(
+                f"Element bị stale khi cuộn cho URL '{url}': {e}. Thử lại hoặc bỏ qua bình luận.",
+                exc_info=True
+            )
         except Exception as e:
             logger.warning(
                 f"Đã xảy ra lỗi không mong muốn khi cuộn cho URL '{url}': {e}. Tiếp tục mà không cuộn đến bình luận.",
@@ -188,7 +195,7 @@ def get_content_article(driver, url: str) -> dict:
 
         # bắt đầu lấy dữ liệu bằng bs4
 
-        soup = BeautifulSoup(html_content, 'html.parser')
+        soup = BeautifulSoup(html_content, 'lxml')
 
         # từ khóa
         keywords_list = []
@@ -254,7 +261,7 @@ def get_content_article(driver, url: str) -> dict:
                     references_text = match.group(1).strip() 
                     if references_text:
 
-                        ref_soup = BeautifulSoup(f"<span>{references_text}</span>", "html.parser")
+                        ref_soup = BeautifulSoup(f"<span>{references_text}</span>", "lxml")
                         cleaned_references_text = ref_soup.get_text(strip=True)
 
                         references_list = re.split(r'\s*,\s*|\s+và\s+', cleaned_references_text)
@@ -331,7 +338,7 @@ def get_content_article(driver, url: str) -> dict:
                     if nickname_a_tag:
                         commenter_name = nickname_a_tag.get_text(strip=True)
                 
-                temp_paragraph_soup = BeautifulSoup(str(paragraph_for_comment_extraction), 'html.parser')
+                temp_paragraph_soup = BeautifulSoup(str(paragraph_for_comment_extraction), 'lxml')
                 temp_p_tag = temp_paragraph_soup.find('p')
                 if temp_p_tag:
                     span_to_remove = temp_p_tag.find('span', class_='txt-name')

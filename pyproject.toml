@@ -11,9 +11,8 @@ dependencies = [
     "requests==2.32.3",
 	"selenium==4.31.0",
 	"beautifulsoup4==4.13.4",
-    # Minio
-	"minio==7.2.15",
-]
+	"lxml==5.3.2",
+ ]
 
 [build-system]
 requires = ["setuptools>=61.0"]
