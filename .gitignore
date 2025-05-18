@@ -21,3 +21,6 @@ dist/
 # Secrets / Environment variables
 .env*
 secrets.yaml
+
+# logs
+logs/
