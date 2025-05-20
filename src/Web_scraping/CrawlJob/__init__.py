@@ -1,1 +1,1 @@
-from .get_data_article_VnExpress import process_date_range_and_categories
+from .get_data_article_VnExpress import process_date_range_and_categories, scrape_vnexpress_articles

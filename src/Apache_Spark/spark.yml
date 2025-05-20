@@ -6,8 +6,8 @@ services:
     entrypoint: ["/opt/spark/bin/spark-class"]
     command: ["org.apache.spark.deploy.master.Master"]
     ports:
-      - "8080:8080"
-      - "7077:7077"
+      - "8080:8080" # Spark Master Web UI
+      - "7077:7077" # Spark Master RPC
     volumes:
       - ./Apache_Spark/apps:/opt/spark/apps
     environment:
@@ -28,14 +28,15 @@ services:
     depends_on:
       - spark-master
     ports:
-      - "8081:8081"
+      - "8081:8081" # Spark Worker 1 Web UI
+      - "4041:4040" # THÊM DÒNG NÀY: Ánh xạ Application UI của driver chạy trên worker 1
     volumes:
       - ./Apache_Spark/apps:/opt/spark/apps
     environment:
       SPARK_MASTER_URL: spark://spark-master:7077
       SPARK_WORKER_CORES: 2
       SPARK_WORKER_MEMORY: 2G
-      SPARK_WORKER_WEBUI_PORT: 8081
+      SPARK_WORKER_WEBUI_PORT: 8081 # Cổng Web UI của Worker (khác với Application UI)
       SPARK_RPC_AUTHENTICATION_ENABLED: false
       SPARK_RPC_ENCRYPTION_ENABLED: false
       SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: false
@@ -53,14 +54,15 @@ services:
     depends_on:
       - spark-master
     ports:
-      - "8082:8081"
+      - "8082:8081" # Spark Worker 2 Web UI (Container port là 8081, host port là 8082)
+      - "4042:4040" # THÊM DÒNG NÀY: Ánh xạ Application UI của driver chạy trên worker 2 ra cổng 4041 của host
     volumes:
       - ./Apache_Spark/apps:/opt/spark/apps
     environment:
       SPARK_MASTER_URL: spark://spark-master:7077
       SPARK_WORKER_CORES: 2
       SPARK_WORKER_MEMORY: 2G
-      SPARK_WORKER_WEBUI_PORT: 8081
+      SPARK_WORKER_WEBUI_PORT: 8081 # Cổng Web UI của Worker
       SPARK_RPC_AUTHENTICATION_ENABLED: false
       SPARK_RPC_ENCRYPTION_ENABLED: false
       SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: false
