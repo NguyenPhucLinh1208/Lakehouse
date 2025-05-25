@@ -1,168 +1,157 @@
 from pyspark.sql import SparkSession
 
+# --- Cấu hình MinIO, Nessie (Không đổi) ---
 minio_endpoint = "http://minio1:9000"
 minio_access_key = "rH4arFLYBxl55rh2zmN1"
 minio_secret_key = "AtEB2XiMAznxvJXRvaXxigdIewIMVKscgPg7dJjI"
 nessie_uri = "http://nessie:19120/api/v2"
 nessie_default_branch = "main"
-catalog_warehouse_path = "s3a://clean-news-lakehouse/nessie_clean_news_warehouse"
 
-app_name = "IcebergNessieCleanNewsSetup"
+# --- Cấu hình cho catalog và warehouse của vùng CLEAN ---
+clean_catalog_name = "nessie-clean-news" # Giữ nguyên tên catalog Spark
+clean_catalog_warehouse_path = "s3a://clean-news-lakehouse/nessie_clean_news_warehouse" # Giữ nguyên warehouse path
+CLEAN_DATABASE_NAME = "news_clean_db" # ĐỊNH NGHĨA TÊN DATABASE/NAMESPACE TRONG NESSIE
+
+app_name = "IcebergNessieCleanNews"
 
 spark_builder = SparkSession.builder.appName(app_name)
 
+# Cấu hình S3A
 spark_builder = spark_builder.config("spark.hadoop.fs.s3a.endpoint", minio_endpoint) \
     .config("spark.hadoop.fs.s3a.access.key", minio_access_key) \
     .config("spark.hadoop.fs.s3a.secret.key", minio_secret_key) \
     .config("spark.hadoop.fs.s3a.path.style.access", "true") \
     .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
 
+# Cấu hình Spark SQL Extensions
 spark_builder = spark_builder.config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,org.projectnessie.spark.extensions.NessieSparkSessionExtensions")
 
-spark_builder = spark_builder.config("spark.sql.catalog.nessie-clean-news", "org.apache.iceberg.spark.SparkCatalog") \
-    .config("spark.sql.catalog.nessie-clean-news.catalog-impl", "org.apache.iceberg.nessie.NessieCatalog") \
-    .config("spark.sql.catalog.nessie-clean-news.uri", nessie_uri) \
-    .config("spark.sql.catalog.nessie-clean-news.ref", nessie_default_branch) \
-    .config("spark.sql.catalog.nessie-clean-news.warehouse", catalog_warehouse_path) \
-    .config("spark.sql.catalog.nessie-clean-news.authentication.type", "NONE")
+# Cấu hình Catalog cho vùng CLEAN
+spark_builder = spark_builder.config(f"spark.sql.catalog.{clean_catalog_name}", "org.apache.iceberg.spark.SparkCatalog") \
+    .config(f"spark.sql.catalog.{clean_catalog_name}.catalog-impl", "org.apache.iceberg.nessie.NessieCatalog") \
+    .config(f"spark.sql.catalog.{clean_catalog_name}.uri", nessie_uri) \
+    .config(f"spark.sql.catalog.{clean_catalog_name}.ref", nessie_default_branch) \
+    .config(f"spark.sql.catalog.{clean_catalog_name}.warehouse", clean_catalog_warehouse_path) \
+    .config(f"spark.sql.catalog.{clean_catalog_name}.authentication.type", "NONE")
+    # Nếu muốn đặt default namespace cho catalog này, bạn có thể thêm:
+    # .config(f"spark.sql.catalog.{clean_catalog_name}.default-namespace", CLEAN_DATABASE_NAME)
 
-spark_builder = spark_builder.config("spark.sql.defaultCatalog", "nessie-clean-news")
+# Đặt default catalog nếu muốn (tùy chọn, vì chúng ta sẽ dùng tên đầy đủ)
+# spark_builder = spark_builder.config("spark.sql.defaultCatalog", clean_catalog_name)
 
 spark = spark_builder.getOrCreate()
+spark.sparkContext.setLogLevel("WARN")
 
-print("SparkSession đã được khởi tạo.")
-print(f"Cấu hình cho Spark Catalog 'nessie-clean-news':")
-print(f"  Implementation: {spark.conf.get('spark.sql.catalog.nessie-clean-news.catalog-impl')}")
-print(f"  Nessie Tool URI: {spark.conf.get('spark.sql.catalog.nessie-clean-news.uri')}")
-print(f"  Warehouse Path: {spark.conf.get('spark.sql.catalog.nessie-clean-news.warehouse')}")
-print(f"Default Spark Catalog: {spark.conf.get('spark.sql.defaultCatalog')}")
+print("SparkSession đã được khởi tạo cho việc thiết lập vùng Clean (refactored).")
+print(f"Cấu hình cho Spark Catalog '{clean_catalog_name}':")
+print(f"  Implementation: {spark.conf.get(f'spark.sql.catalog.{clean_catalog_name}.catalog-impl')}")
+print(f"  Nessie Tool URI: {spark.conf.get(f'spark.sql.catalog.{clean_catalog_name}.uri')}")
+print(f"  Warehouse Path: {spark.conf.get(f'spark.sql.catalog.{clean_catalog_name}.warehouse')}")
 
-print("Đang tạo bảng AUTHORS...")
-spark.sql("""
-CREATE TABLE IF NOT EXISTS authors (
-    AuthorID INT COMMENT 'Khóa chính, ID duy nhất cho mỗi tác giả',
-    AuthorName STRING COMMENT 'Tên của tác giả'
-) USING iceberg
-COMMENT 'Bảng lưu trữ thông tin về tác giả bài viết';
-""")
-print("Bảng AUTHORS đã được tạo (hoặc đã tồn tại).")
-spark.sql("DESCRIBE TABLE EXTENDED authors").show(truncate=False, n=100)
+# --- TẠO DATABASE/NAMESPACE TRONG NESSIE CHO VÙNG CLEAN ---
+try:
+    print(f"Đang tạo database/namespace '{CLEAN_DATABASE_NAME}' trong catalog '{clean_catalog_name}'...")
+    spark.sql(f"CREATE DATABASE IF NOT EXISTS `{clean_catalog_name}`.`{CLEAN_DATABASE_NAME}`")
+    print(f"Database/namespace `{clean_catalog_name}`.`{CLEAN_DATABASE_NAME}` đã được tạo (hoặc đã tồn tại).")
+except Exception as e:
+    print(f"Lỗi khi tạo database/namespace `{clean_catalog_name}`.`{CLEAN_DATABASE_NAME}`: {e}")
 
-print("Đang tạo bảng TOPICS...")
-spark.sql("""
-CREATE TABLE IF NOT EXISTS topics (
-    TopicID INT COMMENT 'Khóa chính, ID duy nhất cho mỗi chủ đề',
-    TopicName STRING COMMENT 'Tên của chủ đề'
-) USING iceberg
-COMMENT 'Bảng lưu trữ các chủ đề chính của tin tức';
-""")
-print("Bảng TOPICS đã được tạo (hoặc đã tồn tại).")
-spark.sql("DESCRIBE TABLE EXTENDED topics").show(truncate=False, n=100)
+# Hàm trợ giúp để tạo bảng (tương tự như script curated)
+def create_iceberg_table_in_db(table_name, schema_sql, db_name, catalog_name=clean_catalog_name, partitioned_by_sql=None):
+    full_table_name_in_catalog = f"`{catalog_name}`.`{db_name}`.`{table_name}`"
+    print(f"Đang tạo bảng {full_table_name_in_catalog}...")
+    try:
+        # spark.sql(f"DROP TABLE IF EXISTS {full_table_name_in_catalog}") # Cẩn thận!
+        create_sql = f"""
+        CREATE TABLE IF NOT EXISTS {full_table_name_in_catalog} (
+            {schema_sql}
+        ) USING iceberg
+        """
+        if partitioned_by_sql:
+            create_sql += f"\nPARTITIONED BY ({partitioned_by_sql})"
+        create_sql += ";"
 
-print("Đang tạo bảng SUBTOPICS...")
-spark.sql("""
-CREATE TABLE IF NOT EXISTS subtopics (
-    SubTopicID INT COMMENT 'Khóa chính, ID duy nhất cho mỗi chủ đề phụ',
-    SubTopicName STRING COMMENT 'Tên của chủ đề phụ',
-    TopicID INT COMMENT 'Khóa ngoại, tham chiếu đến bảng TOPICS (TopicID)'
-) USING iceberg
-COMMENT 'Bảng lưu trữ các chủ đề phụ, liên kết với chủ đề chính';
-""")
-print("Bảng SUBTOPICS đã được tạo (hoặc đã tồn tại).")
-spark.sql("DESCRIBE TABLE EXTENDED subtopics").show(truncate=False, n=100)
+        spark.sql(create_sql)
+        print(f"Bảng {full_table_name_in_catalog} đã được tạo (hoặc đã tồn tại).")
+        spark.sql(f"DESCRIBE TABLE EXTENDED {full_table_name_in_catalog}").show(truncate=False, n=100)
+    except Exception as e:
+        print(f"Lỗi khi tạo bảng {full_table_name_in_catalog}: {e}")
 
-print("Đang tạo bảng KEYWORDS...")
-spark.sql("""
-CREATE TABLE IF NOT EXISTS keywords (
-    KeywordID INT COMMENT 'Khóa chính, ID duy nhất cho mỗi từ khóa',
-    KeywordText STRING COMMENT 'Nội dung của từ khóa'
-) USING iceberg
-COMMENT 'Bảng lưu trữ các từ khóa được sử dụng trong bài viết';
-""")
-print("Bảng KEYWORDS đã được tạo (hoặc đã tồn tại).")
-spark.sql("DESCRIBE TABLE EXTENDED keywords").show(truncate=False, n=100)
+# --- Định nghĩa schema và tạo bảng cho vùng CLEAN ---
 
-print("Đang tạo bảng REFERENCES_TABLE...")
-spark.sql("""
-CREATE TABLE IF NOT EXISTS references_table (
-    ReferenceID INT COMMENT 'Khóa chính, ID duy nhất cho mỗi nguồn tham khảo',
-    ReferenceText STRING COMMENT 'Nội dung/tên của nguồn tham khảo'
-) USING iceberg
-COMMENT 'Bảng lưu trữ các nguồn tham khảo của bài viết';
-""")
-print("Bảng REFERENCES_TABLE đã được tạo (hoặc đã tồn tại).")
-spark.sql("DESCRIBE TABLE EXTENDED references_table").show(truncate=False, n=100)
+authors_schema = """
+    AuthorID STRING,
+    AuthorName STRING
+"""
+create_iceberg_table_in_db("authors", authors_schema, CLEAN_DATABASE_NAME)
 
-print("Đang tạo bảng ARTICLES...")
-spark.sql("""
-CREATE TABLE IF NOT EXISTS articles (
-    ArticleID INT COMMENT 'Khóa chính, ID duy nhất cho mỗi bài viết',
-    Title STRING COMMENT 'Tiêu đề của bài viết',
-    URL STRING COMMENT 'Đường dẫn URL gốc của bài viết',
-    Description STRING COMMENT 'Mô tả ngắn của bài viết',
-    PublicationDate TIMESTAMP COMMENT 'Ngày và giờ xuất bản bài viết',
-    MainContent STRING COMMENT 'Nội dung chính của bài viết',
-    OpinionCount INT COMMENT 'Số lượng ý kiến/bình luận',
-    AuthorID INT COMMENT 'Khóa ngoại, tham chiếu đến bảng AUTHORS (AuthorID)',
-    TopicID INT COMMENT 'Khóa ngoại, tham chiếu đến bảng TOPICS (TopicID)',
-    SubTopicID INT COMMENT 'Khóa ngoại, tham chiếu đến bảng SUBTOPICS (SubTopicID)'
-) USING iceberg
-COMMENT 'Bảng chính lưu trữ thông tin chi tiết của các bài viết'
-PARTITIONED BY (days(PublicationDate)); 
-""")
-# PARTITIONED BY (days(PublicationDate)) sẽ tạo phân vùng dựa trên ngày của cột PublicationDate.
-# Điều này rất tốt cho việc truy vấn theo khoảng thời gian.
-print("Bảng ARTICLES đã được tạo (hoặc đã tồn tại).")
-spark.sql("DESCRIBE TABLE EXTENDED articles").show(truncate=False, n=100)
+topics_schema = """
+    TopicID STRING,
+    TopicName STRING
+"""
+create_iceberg_table_in_db("topics", topics_schema, CLEAN_DATABASE_NAME)
 
-print("Đang tạo bảng ARTICLEKEYWORDS...")
-spark.sql("""
-CREATE TABLE IF NOT EXISTS article_keywords (
-    ArticleID INT COMMENT 'Khóa ngoại, tham chiếu đến bảng ARTICLES (ArticleID)',
-    KeywordID INT COMMENT 'Khóa ngoại, tham chiếu đến bảng KEYWORDS (KeywordID)'
-) USING iceberg
-COMMENT 'Bảng nối giữa bài viết và từ khóa (quan hệ nhiều-nhiều)';
-""")
-print("Bảng ARTICLEKEYWORDS đã được tạo (hoặc đã tồn tại).")
-spark.sql("DESCRIBE TABLE EXTENDED article_keywords").show(truncate=False, n=100)
+subtopics_schema = """
+    SubTopicID STRING,
+    SubTopicName STRING,
+    TopicID STRING
+"""
+create_iceberg_table_in_db("subtopics", subtopics_schema, CLEAN_DATABASE_NAME)
 
-print("Đang tạo bảng ARTICLEREFERENCES...")
-spark.sql("""
-CREATE TABLE IF NOT EXISTS article_references (
-    ArticleID INT COMMENT 'Khóa ngoại, tham chiếu đến bảng ARTICLES (ArticleID)',
-    ReferenceID INT COMMENT 'Khóa ngoại, tham chiếu đến bảng REFERENCES_TABLE (ReferenceID)'
-) USING iceberg
-COMMENT 'Bảng nối giữa bài viết và nguồn tham khảo (quan hệ nhiều-nhiều)';
-""")
-print("Bảng ARTICLEREFERENCES đã được tạo (hoặc đã tồn tại).")
-spark.sql("DESCRIBE TABLE EXTENDED article_references").show(truncate=False, n=100)
+keywords_schema = """
+    KeywordID STRING,
+    KeywordText STRING
+"""
+create_iceberg_table_in_db("keywords", keywords_schema, CLEAN_DATABASE_NAME)
 
-print("Đang tạo bảng COMMENTS...")
-spark.sql("""
-CREATE TABLE IF NOT EXISTS comments (
-    CommentID INT COMMENT 'Khóa chính, ID duy nhất cho mỗi bình luận',
-    ArticleID INT COMMENT 'Khóa ngoại, tham chiếu đến bảng ARTICLES (ArticleID) mà bình luận này thuộc về',
-    CommenterName STRING COMMENT 'Tên người bình luận',
-    CommentContent STRING COMMENT 'Nội dung bình luận',
-    TotalLikes INT COMMENT 'Tổng số lượt thích cho bình luận'
-) USING iceberg
-COMMENT 'Bảng lưu trữ các bình luận của bài viết';
-""")
-print("Bảng COMMENTS đã được tạo (hoặc đã tồn tại).")
-spark.sql("DESCRIBE TABLE EXTENDED comments").show(truncate=False, n=100)
+references_table_schema = """
+    ReferenceID STRING,
+    ReferenceText STRING
+"""
+create_iceberg_table_in_db("references_table", references_table_schema, CLEAN_DATABASE_NAME)
 
-print("Đang tạo bảng COMMENTINTERACTIONS...")
-spark.sql("""
-CREATE TABLE IF NOT EXISTS comment_interactions (
-    CommentInteractionID INT COMMENT 'Khóa chính, ID duy nhất cho mỗi tương tác bình luận',
-    CommentID INT COMMENT 'Khóa ngoại, tham chiếu đến bảng COMMENTS (CommentID)',
-    InteractionType STRING COMMENT 'Loại tương tác (ví dụ: Thích, Vui, Buồn)',
-    InteractionCount INT COMMENT 'Số lượng của loại tương tác này'
-) USING iceberg
-COMMENT 'Bảng lưu trữ chi tiết các loại tương tác cho mỗi bình luận';
-""")
-print("Bảng COMMENTINTERACTIONS đã được tạo (hoặc đã tồn tại).")
-spark.sql("DESCRIBE TABLE EXTENDED comment_interactions").show(truncate=False, n=100)
+articles_schema = """
+    ArticleID STRING,
+    Title STRING,
+    URL STRING,
+    Description STRING,
+    PublicationDate TIMESTAMP,
+    MainContent STRING,
+    OpinionCount INT,
+    AuthorID STRING,
+    TopicID STRING,
+    SubTopicID STRING
+"""
+create_iceberg_table_in_db("articles", articles_schema, CLEAN_DATABASE_NAME, partitioned_by_sql="days(PublicationDate)")
 
+article_keywords_schema = """
+    ArticleID STRING,
+    KeywordID STRING
+"""
+create_iceberg_table_in_db("article_keywords", article_keywords_schema, CLEAN_DATABASE_NAME)
 
+article_references_schema = """
+    ArticleID STRING,
+    ReferenceID STRING
+"""
+create_iceberg_table_in_db("article_references", article_references_schema, CLEAN_DATABASE_NAME)
+
+comments_schema = """
+    CommentID STRING,
+    ArticleID STRING,
+    CommenterName STRING,
+    CommentContent STRING,
+    TotalLikes INT
+"""
+create_iceberg_table_in_db("comments", comments_schema, CLEAN_DATABASE_NAME)
+
+comment_interactions_schema = """
+    CommentInteractionID STRING,
+    CommentID STRING,
+    InteractionType STRING,
+    InteractionCount INT
+"""
+create_iceberg_table_in_db("comment_interactions", comment_interactions_schema, CLEAN_DATABASE_NAME)
+
+print(f"Hoàn tất việc tạo/cập nhật schema các bảng trong database '{CLEAN_DATABASE_NAME}' của catalog '{clean_catalog_name}'.")
 spark.stop()
