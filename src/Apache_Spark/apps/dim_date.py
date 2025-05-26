@@ -39,7 +39,7 @@ print("SparkSession đã được khởi tạo để tạo DimDate.")
 start_date_str = "2015-01-01"
 end_date_str = "2029-12-31"
 
-dim_date_table_name = "DimDate"
+dim_date_table_name = "dim_date"
 full_dim_date_table_path = f"`{curated_catalog_name}`.`{CURATED_DATABASE_NAME}`.`{dim_date_table_name}`"
 
 print(f"Sẽ tạo DimDate từ {start_date_str} đến {end_date_str} vào bảng {full_dim_date_table_path}")

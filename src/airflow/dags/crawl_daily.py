@@ -26,7 +26,7 @@ except ImportError:
     def scrape_vnexpress_articles(driver, category_id, start_date_str, end_date_str): return [], None
 
 
-DAG_ID = "vnexpress_category_crawl_single_day_dynamic_dag_v2" # Đổi tên DAG ID nếu cần
+DAG_ID = "vnexpress_category_crawl_single_day_dynamic_dag" # Đổi tên DAG ID nếu cần
 MINIO_CONNECTION_ID = "my_lakehouse_conn"
 MINIO_BUCKET_NAME = "raw-news-lakehouse"
 SELENIUM_HUB_URL = "http://selenium-hub:4444/wd/hub"
