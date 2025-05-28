@@ -1,50 +1,35 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
-
 import pendulum
 
 from airflow.decorators import dag, task
-from airflow.models.param import Param # Import Param
+from airflow.models.param import Param
 from airflow.operators.empty import EmptyOperator
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from Web_scraping.CrawlJob import process_date_range_and_categories
 
-# Giả sử hàm này đã được định nghĩa và có thể xử lý start_date_str và end_date_str giống nhau
-try:
-    from Web_scraping.CrawlJob import process_date_range_and_categories
-except ImportError:
-    logging.warning("Không thể import Web_scraping.CrawlJob. Sử dụng hàm giả.")
-    def process_date_range_and_categories(selenium_hub_url, start_date_str, end_date_str, s3_hook_for_minio, minio_bucket_name):
-        logging.info(f"Đang giả lập crawl cho: {start_date_str} - {end_date_str} và tải lên {minio_bucket_name}")
-        pass
-
-
-DAG_ID = "vnexpress_daily_parallel_crawl_history_configurable_dag"
+DAG_ID = "vnexpress_crawl_range_time_dag"
 MINIO_CONNECTION_ID = "my_lakehouse_conn"
 MINIO_BUCKET_NAME = "raw-news-lakehouse"
 SELENIUM_HUB_URL = "http://selenium-hub:4444/wd/hub"
 SELENIUM_POOL_NAME = "selenium_pool"
 
-# Giá trị mặc định cho params
-# Lấy 7 ngày trước làm ngày bắt đầu mặc định
 DEFAULT_START_DATE = pendulum.now("Asia/Ho_Chi_Minh").subtract(days=7).format("YYYYMMDD")
-# Lấy ngày hôm qua làm ngày kết thúc mặc định
 DEFAULT_END_DATE = pendulum.now("Asia/Ho_Chi_Minh").subtract(days=1).format("YYYYMMDD")
-
 
 DEFAULT_ARGS = {
     'owner': 'airflow_user',
     'depends_on_past': False,
-    'start_date': pendulum.datetime(2024, 1, 1, tz="Asia/Ho_Chi_Minh"), # Ngày khởi tạo DAG trong Airflow
+    'start_date': pendulum.datetime(2024, 1, 1, tz="Asia/Ho_Chi_Minh"),
     'retries': 1,
-    'retry_delay': pendulum.duration(minutes=5),
+    'retry_delay': pendulum.duration(minutes=1),
     'email_on_failure': False,
     'email_on_retry': False,
 }
 
 DAG_DOC_MD = f"""
-### DAG Thu Thập Dữ Liệu Lịch Sử VnExpress Song Song Theo Ngày (Có Thể Cấu Hình Ngày) - v2
+### DAG Thu Thập Dữ Liệu Lịch Sử VnExpress Song Song Theo Ngày (Có Thể Cấu Hình Ngày)
 
 **Mục đích:**
 - Cho phép người dùng chỉ định khoảng ngày (Từ Ngày - Đến Ngày) cần thu thập khi trigger DAG.
@@ -53,7 +38,7 @@ DAG_DOC_MD = f"""
 - Tải dữ liệu đã thu thập lên MinIO S3.
 
 **Luồng hoạt động:**
-1.  **`generate_single_dates_to_process`**: Tạo danh sách các ngày đơn lẻ (định dạng<x_bin_102>MMDD) cần xử lý dựa trên `pipeline_start_date` và `pipeline_end_date` từ params.
+1.  **`generate_single_dates_to_process`**: Tạo danh sách các ngày đơn lẻ (định dạng YYYYMMDD) cần xử lý dựa trên `pipeline_start_date` và `pipeline_end_date` từ params.
 2.  **`crawl_and_upload_for_single_day_task` (dynamic tasks)**: Với mỗi ngày được tạo, một task song song sẽ được tạo để:
     * Gọi hàm `process_date_range_and_categories` để thu thập dữ liệu.
     * Sử dụng `S3Hook` để tương tác với MinIO.
@@ -70,10 +55,10 @@ Số task Selenium song song tối đa được quản lý bởi `{SELENIUM_POOL
 @dag(
     dag_id=DAG_ID,
     default_args=DEFAULT_ARGS,
-    description='DAG crawl lịch sử VnExpress song song theo ngày, ngày có thể cấu hình, giới hạn bởi pool (v2).',
+    description='DAG crawl VnExpress song song theo ngày, ngày có thể cấu hình, giới hạn bởi pool.',
     schedule=None,
     catchup=False,
-    tags=['web_scraping', 'vnexpress', 'minio', 'history_crawl', 'configurable_date', 'selenium_pool_v2'],
+    tags=['web_scraping', 'vnexpress', 'minio', 'history_crawl', 'configurable_date'],
     doc_md=DAG_DOC_MD,
     params={
         "pipeline_start_date": Param(
@@ -90,25 +75,15 @@ Số task Selenium song song tối đa được quản lý bởi `{SELENIUM_POOL
         )
     }
 )
-def vnexpress_daily_parallel_crawl_history_configurable_v2(): # Đổi tên hàm DAG
-    """
-    DAG chính điều phối việc tạo task cho từng ngày và thực hiện crawl song song.
-    Ngày bắt đầu và kết thúc có thể được cấu hình khi trigger DAG.
-    """
-    logger = logging.getLogger("airflow.dag")
+def vnexpress_crawl_range_time_dag(): 
 
     @task(task_id="generate_list_of_dates")
     def generate_single_dates_to_process(
-        params: dict # SỬA Ở ĐÂY: Nhận `params` trực tiếp từ context
+        params: dict
     ) -> list[dict[str, str]]:
-        """
-        Tạo danh sách các ngày đơn lẻ cần xử lý dựa trên params của DAG run.
-        Mỗi ngày là một dictionary {'processing_date_str': 'YYYYMMDD'}.
-        """
         dates_to_process_list = []
         task_logger = logging.getLogger("airflow.task")
 
-        # `params` đã là một dictionary do TaskFlow inject vào
         global_start_date_str = params.get("pipeline_start_date")
         global_end_date_str = params.get("pipeline_end_date")
 
@@ -117,8 +92,8 @@ def vnexpress_daily_parallel_crawl_history_configurable_v2(): # Đổi tên hàm
             return []
 
         try:
-            current_date = datetime.strptime(global_start_date_str, "%Y%m%d")
-            final_date = datetime.strptime(global_end_date_str, "%Y%m%d")
+            current_date = pendulum.from_format(global_start_date_str, "YYYYMMDD", tz="Asia/Ho_Chi_Minh")
+            final_date = pendulum.from_format(global_end_date_str, "YYYYMMDD", tz="Asia/Ho_Chi_Minh")
 
             if current_date > final_date:
                 task_logger.error(f"Ngày bắt đầu ({global_start_date_str}) không thể lớn hơn ngày kết thúc ({global_end_date_str}).")
@@ -129,9 +104,9 @@ def vnexpress_daily_parallel_crawl_history_configurable_v2(): # Đổi tên hàm
             )
             while current_date <= final_date:
                 dates_to_process_list.append(
-                    {"processing_date_str": current_date.strftime("%Y%m%d")}
+                    {"processing_date_str": current_date.format("YYYYMMDD")}
                 )
-                current_date += timedelta(days=1)
+                current_date = current_date.add(days=1)
             
             if not dates_to_process_list:
                 task_logger.info("Không có ngày nào được tạo để xử lý dựa trên params.")
@@ -202,10 +177,9 @@ def vnexpress_daily_parallel_crawl_history_configurable_v2(): # Đổi tên hàm
             "example_successful_dates": successful_dates[:20]
         }
 
-    start_pipeline = EmptyOperator(task_id='Bắt_đầu_pipeline_lịch_sử_configurable_v2')
-    end_pipeline = EmptyOperator(task_id='Kết_thúc_pipeline_lịch_sử_configurable_v2')
+    start_pipeline = EmptyOperator(task_id='Bắt_đầu_pipeline_lịch_sử_configurable')
+    end_pipeline = EmptyOperator(task_id='Kết_thúc_pipeline_lịch_sử_configurable')
     
-    # SỬA Ở ĐÂY: Gọi task mà không cần truyền tham số tường minh cho `params`
     list_of_dates_to_crawl = generate_single_dates_to_process() 
     
     crawl_results = crawl_and_upload_for_single_day_task.partial(
@@ -216,10 +190,6 @@ def vnexpress_daily_parallel_crawl_history_configurable_v2(): # Đổi tên hàm
     
     summary = summarize_results(processed_dates_results=crawl_results)
     
-    start_pipeline >> list_of_dates_to_crawl
-    list_of_dates_to_crawl >> crawl_results
-    crawl_results >> summary
-    summary >> end_pipeline
-
-# Khởi tạo instance của DAG
-vnexpress_daily_crawl_configurable_dag_v2_instance = vnexpress_daily_parallel_crawl_history_configurable_v2()
+    start_pipeline >> list_of_dates_to_crawl >> crawl_results >> summary >> end_pipeline
+    
+vnexpress_range_time = vnexpress_crawl_range_time_dag()

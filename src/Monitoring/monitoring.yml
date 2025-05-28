@@ -1,18 +1,14 @@
-networks:
-  monitoring-net:
-    driver: bridge
-
 volumes:
   prometheus_data: {}
   grafana_data: {}
   alertmanager_data: {}
-
+  
 services:
   prometheus:
     image: prom/prometheus:v3.3.0
     container_name: prometheus
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./Monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
       # - ./prometheus/rules:/etc/prometheus/rules # Bỏ comment nếu sau này có file rules
     command:
@@ -25,32 +21,17 @@ services:
     ports:
       - "9090:9090"
     networks:
-      - monitoring-net
+      - lakehouse_internal_net
     restart: unless-stopped
-
-  node-exporter:
-    image: prom/node-exporter:v1.9.1 
-    container_name: node-exporter
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.sysfs=/host/sys'
-      - '--path.rootfs=/rootfs'
-      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)'
-    # Không cần expose port 9100 ra ngoài host, Prometheus truy cập qua internal network
-    pid: host # Cần thiết để lấy một số metrics process từ host
-    networks:
-      - monitoring-net
-    restart: unless-stopped
+    depends_on:
+      - pushgateway
+      - cadvisor # Đảm bảo cAdvisor khởi động để Prometheus có thể scrape
 
   alertmanager:
-    image: prom/alertmanager:v0.28.1 
+    image: prom/alertmanager:v0.28.1
     container_name: alertmanager
     volumes:
-      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./Monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
@@ -59,15 +40,15 @@ services:
     ports:
       - "9093:9093"
     networks:
-      - monitoring-net
+      - lakehouse_internal_net
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:11.4.4 
+    image: grafana/grafana:11.4.4
     container_name: grafana
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning # Provisioning datasources, dashboards
+      - ./Monitoring/grafana/provisioning:/etc/grafana/provisioning # Provisioning datasources, dashboards
       # - ./grafana/grafana.ini:/etc/grafana/grafana.ini # Mount file ini nếu cần tùy chỉnh sâu
     environment:
       - GF_SECURITY_ADMIN_USER=NguyenPhucLinh
@@ -76,5 +57,30 @@ services:
     ports:
       - "3000:3000"
     networks:
-      - monitoring-net
+      - lakehouse_internal_net
+    restart: unless-stopped
+
+  pushgateway:
+    image: prom/pushgateway:v1.11.1
+    container_name: pushgateway
+    ports:
+      - "9091:9091"
+    networks:
+      - lakehouse_internal_net
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.0 # Sử dụng phiên bản cụ thể
+    container_name: cadvisor
+    privileged: true # cAdvisor thường cần quyền này để truy cập đầy đủ thông tin host và Docker
+    volumes:
+      - /:/rootfs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro # Cho phép cAdvisor truy cập Docker socket
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8085:8080" # Cổng web UI và metrics của cAdvisor
+    networks:
+      - lakehouse_internal_net
     restart: unless-stopped

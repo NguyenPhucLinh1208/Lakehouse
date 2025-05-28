@@ -9,7 +9,7 @@ from pyspark.sql.types import StructType, StructField, StringType, IntegerType, 
 from pyspark.sql.window import Window
 from datetime import datetime, timedelta
 
-# --- Cấu hình MinIO và Nessie (Tạm thời hardcode) ---
+# --- Cấu hình MinIO và Nessie ---
 minio_endpoint = "http://minio1:9000"
 minio_access_key = "rH4arFLYBxl55rh2zmN1"
 minio_secret_key = "AtEB2XiMAznxvJXRvaXxigdIewIMVKscgPg7dJjI"
@@ -28,9 +28,9 @@ CURATED_DATABASE_NAME = "news_curated_db"
 
 app_name = "NewsETLCleanToCurated_V2"
 
-# --- CẤU HÌNH THỜI GIAN ETL (Tạm thời hardcode, có thể thay đổi để test) ---
-ETL_START_DATE_STR = "2025-05-01" # Ví dụ: Bạn có thể thay đổi ngày này
-ETL_END_DATE_STR = "2025-05-07"   # Ví dụ: Bạn có thể thay đổi ngày này
+# --- CẤU HÌNH THỜI GIAN ETL ---
+ETL_START_DATE_STR = "2025-05-01"
+ETL_END_DATE_STR = "2025-05-07"
 
 spark_builder = SparkSession.builder.appName(app_name)
 
@@ -76,7 +76,7 @@ def get_date_range(start_date_str=None, end_date_str=None, default_days=7):
             return start_date, end_date
         except ValueError:
             print(f"Lỗi định dạng ngày: {start_date_str}, {end_date_str}. Vui lòng dùng YYYY-MM-DD. Sử dụng khoảng mặc định.")
-    
+
     end_date = datetime.now() - timedelta(days=1)
     start_date = end_date - timedelta(days=default_days - 1)
     print(f"Sử dụng khoảng thời gian mặc định: {default_days} ngày, từ {start_date.strftime(date_format_str)} đến {end_date.strftime(date_format_str)}")
@@ -90,21 +90,21 @@ def read_iceberg_table(table_name, catalog_name, db_name, date_filter_col=None, 
         if date_filter_col and start_date and end_date:
             print(f"Áp dụng bộ lọc ngày trên cột '{date_filter_col}': từ {start_date.strftime('%Y-%m-%d')} đến {end_date.strftime('%Y-%m-%d')}")
             df = df.filter(col(date_filter_col) >= lit(start_date.strftime('%Y-%m-%d')).cast(DateType())) \
-                   .filter(col(date_filter_col) <= lit(end_date.strftime('%Y-%m-%d')).cast(DateType()))
-        
+                  .filter(col(date_filter_col) <= lit(end_date.strftime('%Y-%m-%d')).cast(DateType()))
+
         count_val = df.count()
         print(f"Đọc bảng {full_table_name} thành công. Số dòng: {count_val}")
         if count_val == 0 and date_filter_col :
-             print(f"Lưu ý: Không có dữ liệu trong khoảng ngày đã chọn cho bảng {table_name}.")
+            print(f"Lưu ý: Không có dữ liệu trong khoảng ngày đã chọn cho bảng {table_name}.")
         return df
     except Exception as e:
         print(f"Lỗi khi đọc bảng {full_table_name}: {e}")
         raise
 
 def write_curated_iceberg_table(df_to_write, table_name, write_mode,
-                                primary_key_cols_for_merge=None,
-                                partition_cols=None,
-                                catalog_name=curated_catalog_name, db_name=CURATED_DATABASE_NAME):
+                                 primary_key_cols_for_merge=None,
+                                 partition_cols=None,
+                                 catalog_name=curated_catalog_name, db_name=CURATED_DATABASE_NAME):
     full_table_name = f"`{catalog_name}`.`{db_name}`.`{table_name}`"
     temp_view_name = f"{table_name}_source_view_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
 
@@ -136,14 +136,12 @@ def write_curated_iceberg_table(df_to_write, table_name, write_mode,
                 WHEN MATCHED THEN UPDATE SET *
                 WHEN NOT MATCHED THEN INSERT *
                 """
-                print(f"Thực thi MERGE SQL cho {full_table_name}: \n{merge_sql}") # Thêm log câu SQL
+                print(f"Thực thi MERGE SQL cho {full_table_name}: \n{merge_sql}")
                 spark.sql(merge_sql)
 
         elif write_mode == "overwrite_dynamic_partitions":
             if not partition_cols:
                 raise ValueError("Chế độ 'overwrite_dynamic_partitions' yêu cầu 'partition_cols'.")
-            # Đảm bảo df_to_write chứa các cột partition
-            # và các cột này có giá trị để Spark xác định phân vùng
             print(f"Thực hiện overwrite_dynamic_partitions cho {full_table_name} với các cột partition: {partition_cols}")
             df_to_write.write.format("iceberg") \
                 .mode("overwrite") \
@@ -151,11 +149,11 @@ def write_curated_iceberg_table(df_to_write, table_name, write_mode,
                 .save(full_table_name)
 
         elif write_mode == "overwrite_table":
-             writer_ops = df_to_write.writeTo(full_table_name).tableProperty("write.format.default", "parquet")
-             if partition_cols:
-                 writer_ops = writer_ops.partitionedBy(*partition_cols)
-             writer_ops.createOrReplace()
-        
+            writer_ops = df_to_write.writeTo(full_table_name).tableProperty("write.format.default", "parquet")
+            if partition_cols:
+                writer_ops = writer_ops.partitionedBy(*partition_cols)
+            writer_ops.createOrReplace()
+
         else:
             raise ValueError(f"Chế độ ghi '{write_mode}' không được hỗ trợ.")
 
@@ -235,10 +233,10 @@ dim_subtopic_df = subtopics_clean_df \
     .withColumn("SubTopicKey", xxhash64(col("SubTopicID"))) \
     .select(
         col("SubTopicKey"),
-        col("SubTopicID").alias("SubTopicID_NK"),         # ĐÃ SỬA
-        col("SubTopicName").alias("SubTopicName"),       # ĐÃ SỬA
-        col("TopicKey").alias("ParentTopicKey"),          # ĐÃ SỬA (bỏ tiền tố dim_topic_df.)
-        col("TopicName").alias("ParentTopicName")         # ĐÃ SỬA (bỏ tiền tố dim_topic_df.)
+        col("SubTopicID").alias("SubTopicID_NK"),
+        col("SubTopicName"), # Giữ nguyên tên cột SubTopicName
+        col("TopicKey").alias("ParentTopicKey"),
+        col("TopicName").alias("ParentTopicName")
     ) \
     .withColumn("LastUpdatedTimestamp_Curated", current_ts) \
     .dropDuplicates(["SubTopicID_NK"])
@@ -320,9 +318,9 @@ fact_article_publication_df = fact_article_publication_source \
     .select(
         col("DateKey").alias("PublicationDateKey"),
         col("ArticlePublicationTimestamp"), # Cột này sẽ được dùng để partition
-        col("AuthorKey"),                   # Đã bỏ tiền tố dim_author_df.
-        col("TopicKey"),                    # Đã bỏ tiền tố dim_topic_df.
-        col("SubTopicKey"),                 # Đã bỏ tiền tố dim_subtopic_df.
+        col("AuthorKey"),
+        col("TopicKey"),
+        col("SubTopicKey"),
         col("ArticleID_NK"),
         col("ArticleTitle"),
         col("ArticleDescription"),
@@ -332,7 +330,7 @@ fact_article_publication_df = fact_article_publication_source \
         col("CharacterCountInMainContent"),
         col("EstimatedReadTimeMinutes"),
         col("TaggedKeywordCountInArticle"),
-        col("ReferenceSourceCountInArticle") 
+        col("ReferenceSourceCountInArticle")
     ).na.fill({"PublicationDateKey": -1, "AuthorKey": -1, "TopicKey": -1, "SubTopicKey": -1})
 write_curated_iceberg_table(fact_article_publication_df, "fact_article_publication",
                             write_mode="overwrite_dynamic_partitions",
@@ -344,38 +342,39 @@ fact_pub_keys_df = fact_article_publication_df.select(
     "AuthorKey", "TopicKey", "SubTopicKey"
 ).distinct().cache()
 
-# 3.2. FactArticleKeyword
+# --- 3.2. FactArticleKeyword ---
 print("Đang xử lý fact_article_keyword...")
 fact_article_keyword_df = article_keywords_clean_df \
     .join(fact_pub_keys_df, article_keywords_clean_df.ArticleID == fact_pub_keys_df.ArticleID_NK, "inner") \
     .join(dim_keyword_df.select("KeywordID_NK", "KeywordKey"), article_keywords_clean_df.KeywordID == dim_keyword_df.KeywordID_NK, "left_outer") \
     .select(
-        col("ArticlePublicationDateKey"), # Đến từ fact_pub_keys_df
-        col("ArticleID").alias("ArticleID_NK"),          # SỬA Ở ĐÂY: Bỏ tiền tố. Đây là ArticleID từ article_keywords_clean_df
-        col("KeywordKey"),                               # Đến từ dim_keyword_df
-        col("AuthorKey"),                                # Đến từ fact_pub_keys_df
-        col("TopicKey"),                                 # Đến từ fact_pub_keys_df
-        col("SubTopicKey"),                              # Đến từ fact_pub_keys_df
+        col("ArticlePublicationDateKey"),
+        article_keywords_clean_df.ArticleID.alias("ArticleID_NK"),
+        col("KeywordKey"),
+        col("AuthorKey"),
+        col("TopicKey"),
+        col("SubTopicKey"),
         lit(1).alias("IsKeywordTaggedToArticle")
     ).na.fill(-1, subset=["ArticlePublicationDateKey", "KeywordKey", "AuthorKey", "TopicKey", "SubTopicKey"])
 if not fact_article_keyword_df.rdd.isEmpty():
     write_curated_iceberg_table(fact_article_keyword_df, "fact_article_keyword",
-                                write_mode="overwrite_dynamic_partitions", 
+                                write_mode="overwrite_dynamic_partitions",
                                 partition_cols=["ArticlePublicationDateKey"])
 else:
     print("Không có dữ liệu cho fact_article_keyword.")
 
+# --- 3.3. FactArticleReference ---
 print("Đang xử lý fact_article_reference...")
 fact_article_reference_df = article_references_clean_df \
     .join(fact_pub_keys_df, article_references_clean_df.ArticleID == fact_pub_keys_df.ArticleID_NK, "inner") \
     .join(dim_referencesource_df, article_references_clean_df.ReferenceID == dim_referencesource_df.ReferenceID_NK, "left_outer") \
     .select(
         col("ArticlePublicationDateKey"),
-        col("ArticleID").alias("ArticleID_NK"), # <--- SỬA
+        article_references_clean_df.ArticleID.alias("ArticleID_NK"),
         col("ReferenceSourceKey"),
-        col("AuthorKey"), # <--- SỬA (bỏ tiền tố fact_pub_keys_df.)
-        col("TopicKey"),  # <--- SỬA (bỏ tiền tố fact_pub_keys_df.)
-        col("SubTopicKey"),# <--- SỬA (bỏ tiền tố fact_pub_keys_df.)
+        col("AuthorKey"),
+        col("TopicKey"),
+        col("SubTopicKey"),
         lit(1).alias("IsReferenceUsedInArticle")
     ).na.fill(-1, subset=["ArticlePublicationDateKey", "ReferenceSourceKey", "AuthorKey", "TopicKey", "SubTopicKey"])
 if not fact_article_reference_df.rdd.isEmpty():
@@ -385,18 +384,19 @@ if not fact_article_reference_df.rdd.isEmpty():
 else:
     print("Không có dữ liệu cho fact_article_reference.")
 
+# --- 3.4. FactTopCommentActivity ---
 print("Đang xử lý fact_top_comment_activity...")
 fact_top_comment_activity_df = comments_clean_df \
     .join(fact_pub_keys_df, comments_clean_df.ArticleID == fact_pub_keys_df.ArticleID_NK, "inner") \
     .select(
         col("ArticlePublicationDateKey"),
-        col("ArticlePublicationDateKey").alias("CommentDateKey"),
-        col("ArticleID").alias("ArticleID_NK"), # <--- SỬA
-        col("CommentID").alias("CommentID_NK"), # <--- SỬA
-        col("AuthorKey"),   # <--- SỬA (bỏ tiền tố fact_pub_keys_df.)
-        col("TopicKey"),    # <--- SỬA (bỏ tiền tố fact_pub_keys_df.)
-        col("SubTopicKey"),  # <--- SỬA (bỏ tiền tố fact_pub_keys_df.)
-        col("CommenterName"), # Đến từ comments_clean_df
+        col("ArticlePublicationDateKey").alias("CommentDateKey"), # Giả định ngày comment trùng ngày đăng bài
+        comments_clean_df.ArticleID.alias("ArticleID_NK"),
+        comments_clean_df.CommentID.alias("CommentID_NK"),
+        col("AuthorKey"),
+        col("TopicKey"),
+        col("SubTopicKey"),
+        col("CommenterName"),
         lit(1).alias("IsTopComment"),
         col("TotalLikes").alias("LikesOnTopComment")
     ).na.fill({"ArticlePublicationDateKey": -1, "CommentDateKey": -1, "AuthorKey": -1, "TopicKey": -1, "SubTopicKey": -1})
@@ -407,8 +407,8 @@ if not fact_top_comment_activity_df.rdd.isEmpty():
 else:
     print("Không có dữ liệu cho fact_top_comment_activity.")
 
+# --- 3.5. FactTopCommentInteractionDetail ---
 print("Đang xử lý fact_top_comment_interaction_detail...")
-
 fact_top_comment_interaction_detail_df = comment_interactions_for_facts_df.alias("cif") \
     .join(comments_clean_df.select("CommentID", "ArticleID").alias("cmt"),
           col("cif.CommentID") == col("cmt.CommentID"), "inner") \
@@ -418,7 +418,7 @@ fact_top_comment_interaction_detail_df = comment_interactions_for_facts_df.alias
           col("cif.InteractionType") == col("dit.InteractionTypeName"), "left_outer") \
     .select(
         col("fpk.ArticlePublicationDateKey").alias("ArticlePublicationDateKey"),
-        col("fpk.ArticlePublicationDateKey").alias("InteractionDateKey"),
+        col("fpk.ArticlePublicationDateKey").alias("InteractionDateKey"), # Giả định ngày tương tác trùng ngày đăng bài
         col("cmt.ArticleID").alias("ArticleID_NK"),
         col("cif.CommentID").alias("CommentID_NK"),
         col("dit.InteractionTypeKey"),
@@ -436,11 +436,6 @@ fact_top_comment_interaction_detail_df = comment_interactions_for_facts_df.alias
         "SubTopicKey": -1
     })
 
-# Giả sử hàm write_curated_iceberg_table đã được định nghĩa ở nơi khác
-# def write_curated_iceberg_table(df, table_name, write_mode, partition_cols):
-# # Nội dung hàm
-# pass
-
 if not fact_top_comment_interaction_detail_df.rdd.isEmpty():
     write_curated_iceberg_table(
         fact_top_comment_interaction_detail_df,
@@ -451,7 +446,7 @@ if not fact_top_comment_interaction_detail_df.rdd.isEmpty():
 else:
     print("Không có dữ liệu cho fact_top_comment_interaction_detail.")
 
-# Unpersist cached DataFrames
+# Giải phóng các DataFrame đã cache
 processed_article_ids_df.unpersist()
 comments_clean_df.unpersist()
 dim_author_df.unpersist()

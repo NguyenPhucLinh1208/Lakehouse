@@ -20,11 +20,11 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090'] # Prometheus scrape chính nó
 
-  # Scrape Node Exporter (trên host chạy Docker)
-  - job_name: 'node-exporter'
-    static_configs:
-      # Sử dụng tên service trong docker-compose network
-      - targets: ['node-exporter:9100']
+  # Scrape Node Exporter (trên host chạy Docker) - ĐÃ BỊ CHÚ THÍCH THEO YÊU CẦU
+  # - job_name: 'node-exporter'
+  #   static_configs:
+  #     # Sử dụng tên service trong docker-compose network
+  #     - targets: ['node-exporter:9100']
 
   # Scrape Alertmanager
   - job_name: 'alertmanager'
@@ -32,7 +32,36 @@ scrape_configs:
       # Sử dụng tên service trong docker-compose network
       - targets: ['alertmanager:9093']
 
-  # Thêm các job khác để scrape các exporter/ứng dụng của bạn ở đây
+  # Scrape Pushgateway
+  - job_name: 'pushgateway'
+    honor_labels: true # Rất quan trọng để giữ lại các label từ job được push lên
+    static_configs:
+      # Sử dụng tên service và port mặc định của Pushgateway trong docker-compose network
+      - targets: ['pushgateway:9091']
+
+  # Scrape cAdvisor
+  - job_name: 'cadvisor'
+    static_configs:
+      # Sử dụng tên service và port của cAdvisor trong docker-compose network
+      - targets: ['cadvisor:8080']
+    # Thêm các relabel_configs nếu cần để tùy chỉnh metrics từ cAdvisor
+    # Ví dụ: để thêm nhãn cho tên container dễ đọc hơn
+    # metrics_path: /metrics
+    # relabel_configs:
+    #   - source_labels: [id]
+    #     regex: '/docker/(.*)'
+    #     target_label: container_id
+    #     replacement: '$1'
+    #   - source_labels: [name]
+    #     regex: '/(.*)' # Giữ lại tên container mà cAdvisor cung cấp
+    #     target_label: container_name
+    #     replacement: '$1'
+    #   - source_labels: [image]
+    #     target_label: container_image
+    #     regex: '(?:[^/]+/)?([^@:]+)(?:[@:].*)?' # Trích xuất tên image ngắn gọn
+    #     replacement: '$1'
+
+  # Thêm các job khác 
   # - job_name: 'your_app_exporter'
   #   static_configs:
   #     - targets: ['your_app_exporter_hostname:port']
