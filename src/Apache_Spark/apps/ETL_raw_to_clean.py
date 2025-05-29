@@ -22,9 +22,10 @@ CLEAN_DATABASE_NAME = "news_clean_db"
 app_name = "NewsETLRawToClean_V2"
 
 # --- CẤU HÌNH THỜI GIAN ETL ---
-ETL_START_DATE_STR = "2025-05-01"
-ETL_END_DATE_STR = "2025-05-07"
+ETL_START_DATE_STR = "2025-05-08"
+ETL_END_DATE_STR = "2025-05-15"
 RAW_BASE_S3_PATH = "s3a://raw-news-lakehouse"
+
 
 spark_builder = SparkSession.builder.appName(app_name)
 
@@ -43,6 +44,7 @@ spark_builder = spark_builder.config(f"spark.sql.catalog.{clean_catalog_name}", 
     .config(f"spark.sql.catalog.{clean_catalog_name}.authentication.type", "NONE")
 
 spark = spark_builder.getOrCreate()
+
 spark.sparkContext.setLogLevel("WARN")
 
 print(f"SparkSession đã được khởi tạo cho ETL: {app_name}.")
