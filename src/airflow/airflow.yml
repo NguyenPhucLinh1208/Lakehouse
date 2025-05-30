@@ -19,6 +19,7 @@ x-airflow-common:
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
   volumes:
     - .:/opt
+    - ../../../../../var/run/docker.sock:/var/run/docker.sock
   user: "${AIRFLOW_UID}:0"
   env_file:
     - .env

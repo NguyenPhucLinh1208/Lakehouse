@@ -6,24 +6,42 @@ from pyspark.sql.functions import (
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType, TimestampType, MapType
 from datetime import datetime, timedelta
 import os
+from dotenv import load_dotenv
+import argparse
 
+load_dotenv()
 # --- Cấu hình MinIO, Nessie ---
-minio_endpoint = "http://minio1:9000"
-minio_access_key = "rH4arFLYBxl55rh2zmN1"
-minio_secret_key = "AtEB2XiMAznxvJXRvaXxigdIewIMVKscgPg7dJjI"
-nessie_uri = "http://nessie:19120/api/v2"
-nessie_default_branch = "main"
+minio_endpoint = os.getenv("MINIO_ENDPOINT")
+minio_access_key = os.getenv("MINIO_ACCESS_KEY")
+minio_secret_key = os.getenv("MINIO_SECRET_KEY")
+nessie_uri = os.getenv("NESSIE_URI")
+nessie_default_branch = os.getenv("NESSIE_DEFAULT_BRANCH")
 
 # --- Cấu hình Catalog và Database cho CLEAN zone ---
 clean_catalog_name = "nessie-clean-news"
 clean_catalog_warehouse_path = "s3a://clean-news-lakehouse/nessie_clean_news_warehouse"
 CLEAN_DATABASE_NAME = "news_clean_db"
 
-app_name = "NewsETLRawToClean_V2"
+app_name = "NewsETLRawToClean"
+
+arg_parser = argparse.ArgumentParser(description="Tham số cho ngày bắt đầu và kết thúc cho ETL")
+arg_parser.add_argument(
+    "--etl-start-date",
+    type=str,
+    default=None,
+    help="Start date (YYYY-MM-DD). Mặc định (last 7 days)."
+)
+arg_parser.add_argument(
+    "--etl-end-date",
+    type=str,
+    default=None,
+    help="End date (YYYY-MM-DD). Mặc định (last 7 days)."
+)
+args = arg_parser.parse_args()
 
 # --- CẤU HÌNH THỜI GIAN ETL ---
-ETL_START_DATE_STR = "2025-05-08"
-ETL_END_DATE_STR = "2025-05-15"
+ETL_START_DATE_STR = args.etl_start_date 
+ETL_END_DATE_STR = args.etl_end_date   
 RAW_BASE_S3_PATH = "s3a://raw-news-lakehouse"
 
 

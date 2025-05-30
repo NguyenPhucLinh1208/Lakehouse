@@ -1,56 +1,81 @@
-# ~/DataEngineerProject/Lakehouse/src/airflow/dags/news_etl_dag_run_original_script.py
-
 from __future__ import annotations
 
 import pendulum
+from docker.types import Mount
 
 from airflow.models.dag import DAG
-from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from airflow.providers.docker.operators.docker import DockerOperator
+from airflow.models.param import Param
 
+SPARK_CLIENT_IMAGE_NAME = "my-spark-client:latest"
+HOST_SPARK_APPS_DIR = "/home/nplinhwsl/DataEngineerProject/Lakehouse/src/Apache_Spark/apps"
+CONTAINER_APP_BASE_PATH = "/app"
+APPLICATION_PATH_IN_CONTAINER = f"{CONTAINER_APP_BASE_PATH}/ETL_raw_to_clean.py"
+JARS_DIR_IN_CONTAINER = f"{CONTAINER_APP_BASE_PATH}/jars"
 
-# --- Đường dẫn tới script PySpark và JARs BÊN TRONG IMAGE AIRFLOW WORKER ---
-# (Dựa trên thông tin ls bạn cung cấp)
-APPLICATION_PATH = "/opt/project_code/Apache_Spark/apps/ETL_raw_to_clean.py"
-
-JARS_DIR_PATH = "/opt/project_code/Apache_Spark/apps/jars"
-JARS_LIST = [
-    f"{JARS_DIR_PATH}/hadoop-aws-3.3.4.jar",
-    f"{JARS_DIR_PATH}/aws-java-sdk-bundle-1.12.783.jar",
-    f"{JARS_DIR_PATH}/iceberg-spark-runtime-3.5_2.12-1.9.0.jar",
-    f"{JARS_DIR_PATH}/nessie-spark-extensions-3.5_2.12-0.103.5.jar"
+JARS_LIST_IN_CONTAINER = [
+    f"{JARS_DIR_IN_CONTAINER}/hadoop-aws-3.3.4.jar",
+    f"{JARS_DIR_IN_CONTAINER}/aws-java-sdk-bundle-1.12.783.jar",
+    f"{JARS_DIR_IN_CONTAINER}/iceberg-spark-runtime-3.5_2.12-1.9.0.jar",
+    f"{JARS_DIR_IN_CONTAINER}/nessie-spark-extensions-3.5_2.12-0.103.5.jar"
 ]
-JARS_STRING = ",".join(JARS_LIST)
+JARS_STRING_FOR_SPARK_SUBMIT = ",".join(JARS_LIST_IN_CONTAINER)
 
-# Tên Airflow Connection cho Spark bạn đã tạo
-SPARK_CONNECTION_ID = "spark_cluster_conn"
+SPARK_SUBMIT_PATH_IN_CLIENT_IMAGE = "/usr/local/bin/spark-submit"
 
 with DAG(
-    dag_id="news_etl_run_original_script",
-    # start_date nên là một ngày cố định trong quá khứ nếu bạn không muốn catchup
-    
-    start_date=pendulum.datetime(2025, 5, 1, tz="UTC"), # Hoặc ngày bạn muốn bắt đầu theo dõi
-    schedule=None,  # Đặt là None để chỉ chạy thủ công ban đầu, hoặc "@once"
-    catchup=False,  # Không chạy bù các kỳ đã qua
-    doc_md="""
-    ### ETL Pipeline: Run Original Raw News to Clean News Script
-    
-    This DAG orchestrates the **original** Spark job (`ETL_raw_to_clean.py`)
-    to transform raw news data.
-    
-    **Important Notes for this version:**
-    - The Spark script uses its **hardcoded dates** for ETL processing.
-    - The Spark script uses its **hardcoded MinIO and Nessie configurations**.
-    - The Airflow MinIO connection `my_lakehouse_conn` is not actively used by this DAG
-      to pass credentials to the Spark job in this iteration.
-    """,
-    tags=["news", "etl", "spark", "initial_run"],
+    dag_id="ETL_raw_zone_to_clean_zone",
+    start_date=pendulum.datetime(2024, 1, 1, tz="Asia/Ho_Chi_Minh"),
+    schedule=None,
+    catchup=False,
+    tags=["news", "etl", "spark", "docker_operator"],
+    params={
+        "etl_start_date": Param(
+            default=None,
+            type=["null", "string"],
+            description="Optional: Start date for ETL (YYYY-MM-DD). If None, uses script's default logic (last 7 days)."
+        ),
+        "etl_end_date": Param(
+            default=None,
+            type=["null", "string"],
+            description="Optional: End date for ETL (YYYY-MM-DD). If None, uses script's default logic (last 7 days)."
+        ),
+    },
 ) as dag:
-    submit_original_spark_etl_job = SparkSubmitOperator(
-        task_id="submit_original_news_etl_job",
-        application=APPLICATION_PATH,       # Đường dẫn đến script PySpark
-        conn_id=SPARK_CONNECTION_ID,        # Sử dụng connection 'spark_cluster_conn'
-        jars=JARS_STRING,                   # Danh sách các JARs
-        # application_args=[],              # Không truyền args, script tự dùng giá trị hardcode
-        # conf={},                          # Không truyền conf, script tự cấu hình SparkSession
-        verbose=True,                       # In log chi tiết của spark-submit
+ 
+    spark_submit_cmd = f"{SPARK_SUBMIT_PATH_IN_CLIENT_IMAGE} " \
+                       f"--master spark://spark-master:7077 " \
+                       f"--deploy-mode client " \
+                       f"--name airflow_docker_etl_param_{{{{ run_id }}}} " \
+                       f"--jars {JARS_STRING_FOR_SPARK_SUBMIT} " \
+                       f"--verbose " \
+                       f"{APPLICATION_PATH_IN_CONTAINER}"
+
+    # Thêm tham số nếu được cung cấp
+    if "{{ params.etl_start_date }}" != "None":
+        spark_submit_cmd += f" --etl-start-date {{{{ params.etl_start_date }}}}"
+    if "{{ params.etl_end_date }}" != "None":
+        spark_submit_cmd += f" --etl-end-date {{{{ params.etl_end_date }}}}"
+
+    submit_spark_job = DockerOperator(
+        task_id="submit_etl_raw_to_clean_job",
+        image=SPARK_CLIENT_IMAGE_NAME,
+        container_name="spark-client_etl_raw_to_clean_job",
+        command=['bash', '-c', spark_submit_cmd],
+        docker_url="unix://var/run/docker.sock",
+        network_mode="lakehouse_net",
+        auto_remove='success',
+        mounts=[
+            Mount(
+                source=HOST_SPARK_APPS_DIR,
+                target=CONTAINER_APP_BASE_PATH,
+                type='bind',
+                read_only=False
+            )
+        ],
+        port_bindings={
+            "4040": "4048"
+        },
+        mount_tmp_dir=False,
     )
+
