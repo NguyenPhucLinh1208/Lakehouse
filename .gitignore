@@ -24,3 +24,6 @@ secrets.yaml
 
 # logs
 logs/
+
+# Ignore all .jar files
+*.jar
