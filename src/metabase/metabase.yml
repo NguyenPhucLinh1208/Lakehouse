@@ -1,0 +1,51 @@
+volumes:
+  metabase-app-data:
+  metabase-db-data:
+
+
+services:
+  metabase-db:
+    image: postgres:15
+    container_name: metabase_postgres_backend_db
+    hostname: metabase-db
+    ports:
+      - "54322:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_METABASE_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_METABASE_PASSWORD}
+      POSTGRES_DB: metabase_app_db 
+    volumes:
+      - metabase-db-data:/var/lib/postgresql/data
+    networks:
+      - lakehouse_internal_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_METABASE_USER} -d metabase_app_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  metabase:
+    image: metabase/metabase:v0.55.x
+    container_name: metabase_service
+    hostname: metabase
+    ports:
+      - "3001:3000"
+    volumes:
+      - metabase-app-data:/metabase-data
+    networks:
+      - lakehouse_internal_net
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_CONNECTION_URI: "postgresql://${POSTGRES_METABASE_USER}:${POSTGRES_METABASE_PASSWORD}@metabase-db:5432/metabase_app_db?sslmode=prefer"
+    depends_on:
+      metabase-db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s

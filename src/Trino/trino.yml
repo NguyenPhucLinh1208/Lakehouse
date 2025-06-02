@@ -1,6 +1,6 @@
 services:
   trino-coordinator:
-    image: trinodb/trino:474
+    image: trinodb/trino:475
     container_name: trino-coordinator
     hostname: trino-coordinator # Quan trọng cho discovery.uri
     ports:
@@ -18,7 +18,7 @@ services:
 
   trino-worker-1:
     # PHẢI sử dụng CÙNG phiên bản Trino với Coordinator
-    image: trinodb/trino:474
+    image: trinodb/trino:475
     container_name: trino-worker-1
     hostname: trino-worker-1
     networks:
@@ -35,7 +35,7 @@ services:
 
   trino-worker-2:
     # PHẢI sử dụng CÙNG phiên bản Trino với Coordinator
-    image: trinodb/trino:474
+    image: trinodb/trino:475
     container_name: trino-worker-2
     hostname: trino-worker-2
     networks:

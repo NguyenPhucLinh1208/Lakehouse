@@ -2,7 +2,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, explode, to_timestamp, current_timestamp,
     lit, when, expr, sha2, concat_ws, coalesce, udf, from_json, date_format,
-    trim, broadcast # Đã thêm trim và broadcast
+    trim, broadcast
 )
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType, TimestampType, MapType
 from datetime import datetime, timedelta
@@ -11,36 +11,38 @@ from dotenv import load_dotenv
 import argparse
 import time
 from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
-import traceback # Thêm để in traceback lỗi chi tiết
+import traceback
+import pytz
 
 load_dotenv()
 
-# --- Cấu hình MinIO, Nessie ---
 minio_endpoint = os.getenv("MINIO_ENDPOINT")
 minio_access_key = os.getenv("MINIO_ACCESS_KEY")
 minio_secret_key = os.getenv("MINIO_SECRET_KEY")
 nessie_uri = os.getenv("NESSIE_URI")
 nessie_default_branch = os.getenv("NESSIE_DEFAULT_BRANCH")
 
-# --- Cấu hình Catalog và Database cho CLEAN zone ---
 clean_catalog_name = "nessie-clean-news"
 clean_catalog_warehouse_path = "s3a://clean-news-lakehouse/nessie_clean_news_warehouse"
 CLEAN_DATABASE_NAME = "news_clean_db"
 
-app_name = "NewsETLRawToClean" # Sẽ được dùng làm JOB_NAME cho Prometheus
+app_name = "NewsETLRawToClean"
+
+VIETNAM_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
+DATE_FORMAT_PATTERN = "%Y-%m-%d"
 
 arg_parser = argparse.ArgumentParser(description="Tham số cho ngày bắt đầu và kết thúc cho ETL")
 arg_parser.add_argument(
     "--etl-start-date",
     type=str,
     default=None,
-    help="Start date (YYYY-MM-DD). Mặc định (last 7 days)."
+    help=f"Start date ({DATE_FORMAT_PATTERN}). Mặc định (7 ngày gần nhất tính theo giờ VN)."
 )
 arg_parser.add_argument(
     "--etl-end-date",
     type=str,
     default=None,
-    help="End date (YYYY-MM-DD). Mặc định (last 7 days)."
+    help=f"End date ({DATE_FORMAT_PATTERN}). Mặc định (ngày hôm qua tính theo giờ VN)."
 )
 arg_parser.add_argument(
     "--airflow-run-id",
@@ -50,12 +52,10 @@ arg_parser.add_argument(
 )
 args = arg_parser.parse_args()
 
-# --- CẤU HÌNH THỜI GIAN ETL ---
 ETL_START_DATE_STR = args.etl_start_date
 ETL_END_DATE_STR = args.etl_end_date
 RAW_BASE_S3_PATH = "s3a://raw-news-lakehouse"
 
-# --- Cấu hình Prometheus ---
 PROMETHEUS_PUSHGATEWAY_URL = "http://pushgateway:9091"
 JOB_NAME = app_name
 INSTANCE_ID = args.airflow_run_id
@@ -66,15 +66,15 @@ METRIC_PREFIX = "etl"
 g_job_duration = Gauge(f'{METRIC_PREFIX}_job_duration_seconds', 'Tổng thời gian chạy của job ETL', registry=registry)
 g_job_status = Gauge(f'{METRIC_PREFIX}_job_status', 'Trạng thái kết thúc job (1=thành công, 0=thất bại)', registry=registry)
 g_job_last_success_ts = Gauge(f'{METRIC_PREFIX}_job_last_success_timestamp', 'Unix timestamp của lần chạy job thành công cuối cùng', registry=registry)
-g_processed_date_start_ts = Gauge(f'{METRIC_PREFIX}_job_processed_date_range_start_timestamp', 'Unix timestamp của ngày bắt đầu xử lý', registry=registry)
-g_processed_date_end_ts = Gauge(f'{METRIC_PREFIX}_job_processed_date_range_end_timestamp', 'Unix timestamp của ngày kết thúc xử lý', registry=registry)
+g_processed_date_start_ts = Gauge(f'{METRIC_PREFIX}_job_processed_date_range_start_timestamp', 'Unix timestamp của ngày bắt đầu xử lý (0h giờ VN)', registry=registry)
+g_processed_date_end_ts = Gauge(f'{METRIC_PREFIX}_job_processed_date_range_end_timestamp', 'Unix timestamp của ngày kết thúc xử lý (0h giờ VN)', registry=registry)
 g_valid_url_records_count = Gauge(f'{METRIC_PREFIX}_valid_url_records_processed_count', 'Số lượng bản ghi có URL hợp lệ được xử lý', registry=registry)
 g_read_stage_duration = Gauge(f'{METRIC_PREFIX}_read_stage_duration_seconds', 'Thời gian đọc và lọc dữ liệu raw ban đầu', registry=registry)
 g_articles_records_to_write = Gauge(f'{METRIC_PREFIX}_articles_records_to_write_count', 'Số lượng bản ghi articles chuẩn bị để ghi/merge', registry=registry)
 g_articles_write_duration = Gauge(f'{METRIC_PREFIX}_articles_write_duration_seconds', 'Thời gian ghi/merge bảng articles', registry=registry)
 g_articles_by_pub_date_count = Gauge(
     f'{METRIC_PREFIX}_articles_by_publication_date_count',
-    'Số lượng bài báo theo ngày xuất bản',
+    'Số lượng bài báo theo ngày xuất bản (giờ VN)',
     ['publication_date'],
     registry=registry
 )
@@ -102,7 +102,6 @@ job_succeeded_flag = False
 
 spark_builder = SparkSession.builder.appName(app_name)
 
-# Cấu hình S3A và Spark SQL Extensions
 spark_builder = spark_builder.config("spark.hadoop.fs.s3a.endpoint", minio_endpoint) \
     .config("spark.hadoop.fs.s3a.access.key", minio_access_key) \
     .config("spark.hadoop.fs.s3a.secret.key", minio_secret_key) \
@@ -115,50 +114,48 @@ spark_builder = spark_builder.config("spark.hadoop.fs.s3a.endpoint", minio_endpo
     .config(f"spark.sql.catalog.{clean_catalog_name}.ref", nessie_default_branch) \
     .config(f"spark.sql.catalog.{clean_catalog_name}.warehouse", clean_catalog_warehouse_path) \
     .config(f"spark.sql.catalog.{clean_catalog_name}.authentication.type", "NONE") \
-    .config("spark.sql.adaptive.enabled", "true") # TỐI ƯU: Bật Adaptive Query Execution (cho Spark 3.x+)
+    .config("spark.sql.adaptive.enabled", "true") \
+    .config("spark.sql.session.timeZone", "Asia/Ho_Chi_Minh")
 
-# Khởi tạo actual_start_date_for_metric và actual_end_date_for_metric
 actual_start_date_for_metric = None
 actual_end_date_for_metric = None
 
 try:
     spark = spark_builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
-    print(f"SparkSession đã được khởi tạo cho ETL: {app_name}.")
+    print(f"SparkSession đã được khởi tạo cho ETL: {app_name} với múi giờ session: {spark.conf.get('spark.sql.session.timeZone')}.")
 
-    # --- HÀM TIỆN ÍCH ---
     def generate_surrogate_key(*cols_to_hash):
         return sha2(concat_ws("||", *cols_to_hash), 256)
 
-    # TỐI ƯU: Hàm được sửa đổi để trả về ngày
     def get_s3_paths_for_date_range(base_s3_path, start_date_str=None, end_date_str=None):
         paths = []
-        _actual_start_date = None
-        _actual_end_date = None
-        date_format_pattern = "%Y-%m-%d"
+        _actual_start_date_aware = None
+        _actual_end_date_aware = None
 
         if start_date_str and end_date_str:
             try:
-                _actual_start_date = datetime.strptime(start_date_str, date_format_pattern)
-                _actual_end_date = datetime.strptime(end_date_str, date_format_pattern)
-                print(f"Sử dụng khoảng thời gian tùy chỉnh: {start_date_str} đến {end_date_str}")
+                start_date_naive = datetime.strptime(start_date_str, DATE_FORMAT_PATTERN)
+                end_date_naive = datetime.strptime(end_date_str, DATE_FORMAT_PATTERN)
+                _actual_start_date_aware = VIETNAM_TZ.localize(start_date_naive)
+                _actual_end_date_aware = VIETNAM_TZ.localize(end_date_naive)
+                print(f"Sử dụng khoảng thời gian tùy chỉnh (giờ VN): {_actual_start_date_aware} đến {_actual_end_date_aware}")
             except ValueError:
-                print(f"Lỗi định dạng ngày: {start_date_str}, {end_date_str}. Vui lòng dùng YYYY-MM-DD.")
+                print(f"Lỗi định dạng ngày: '{start_date_str}', '{end_date_str}'. Vui lòng dùng định dạng '{DATE_FORMAT_PATTERN}'.")
                 raise
         else:
-            _actual_end_date = datetime.now() - timedelta(days=1)
-            _actual_start_date = _actual_end_date - timedelta(days=6)
-            print(f"Sử dụng khoảng thời gian mặc định: 7 ngày gần nhất, từ {_actual_start_date.strftime(date_format_pattern)} đến {_actual_end_date.strftime(date_format_pattern)}")
+            now_in_vietnam = datetime.now(VIETNAM_TZ)
+            _actual_end_date_aware = (now_in_vietnam - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            _actual_start_date_aware = _actual_end_date_aware - timedelta(days=6)
+            print(f"Sử dụng khoảng thời gian mặc định (giờ VN): 7 ngày gần nhất, từ {_actual_start_date_aware.strftime(DATE_FORMAT_PATTERN)} đến {_actual_end_date_aware.strftime(DATE_FORMAT_PATTERN)}")
 
-        current_date = _actual_start_date
-        while current_date <= _actual_end_date:
-            path = f"{base_s3_path}/{current_date.strftime('%Y/%m/%d')}/*.jsonl"
+        current_date_aware = _actual_start_date_aware
+        while current_date_aware <= _actual_end_date_aware:
+            path = f"{base_s3_path}/{current_date_aware.strftime('%Y/%m/%d')}/*.jsonl"
             paths.append(path)
-            current_date += timedelta(days=1)
-        return paths, _actual_start_date, _actual_end_date
+            current_date_aware += timedelta(days=1)
+        return paths, _actual_start_date_aware, _actual_end_date_aware
 
-
-    # --- ĐỌC DỮ LIỆU RAW ---
     raw_schema = StructType([
         StructField("title", StringType(), True), StructField("url", StringType(), True),
         StructField("description", StringType(), True), StructField("topic", StringType(), True),
@@ -174,7 +171,6 @@ try:
     ])
     top_binh_luan_array_schema = ArrayType(top_binh_luan_item_schema)
 
-    # Gọi hàm đã sửa đổi
     raw_data_paths, actual_start_date_for_metric, actual_end_date_for_metric = \
         get_s3_paths_for_date_range(RAW_BASE_S3_PATH, ETL_START_DATE_STR, ETL_END_DATE_STR)
 
@@ -187,7 +183,6 @@ try:
         print(f"Đang đọc dữ liệu raw từ các đường dẫn: {raw_data_paths}")
         df_before_url_filter = spark.read.schema(raw_schema).json(raw_data_paths)
         
-        # TỐI ƯU: Sử dụng trim để filter URL mạnh mẽ hơn
         raw_df_initial = df_before_url_filter.filter(col("url").isNotNull() & (trim(col("url")) != ""))
         
         count_raw_initial = raw_df_initial.count()
@@ -205,11 +200,9 @@ try:
         g_read_stage_duration.set(read_stage_duration_val)
 
     raw_df_with_article_id = raw_df_initial.withColumn("ArticleID", generate_surrogate_key(col("url")))
-    # raw_df_with_article_id.cache() # Cân nhắc cache nếu raw_df_with_article_id được dùng nhiều và bộ nhớ cho phép
 
     print("--- BẮT ĐẦU QUÁ TRÌNH TRANSFORM ---")
 
-    # --- Xử lý bảng AUTHORS ---
     print("\n--- Xử lý bảng AUTHORS ---")
     authors_intermediate_df = raw_df_with_article_id.select(col("tac_gia").alias("AuthorName")) \
         .filter(col("AuthorName").isNotNull() & (trim(col("AuthorName")) != "")) \
@@ -219,7 +212,6 @@ try:
         .select("AuthorID", "AuthorName") \
         .dropDuplicates(["AuthorID"])
 
-    # --- Xử lý bảng TOPICS ---
     print("\n--- Xử lý bảng TOPICS ---")
     topics_intermediate_df = raw_df_with_article_id.select(col("topic").alias("TopicName")) \
         .filter(col("TopicName").isNotNull() & (trim(col("TopicName")) != "")) \
@@ -229,7 +221,6 @@ try:
         .select("TopicID", "TopicName") \
         .dropDuplicates(["TopicID"])
 
-    # --- Xử lý bảng SUBTOPICS ---
     print("\n--- Xử lý bảng SUBTOPICS ---")
     subtopics_intermediate_df = raw_df_with_article_id \
         .filter(
@@ -244,7 +235,6 @@ try:
         .select(col("SubTopicID"), col("SubTopicName"), col("TopicID")) \
         .dropDuplicates(["SubTopicID"])
 
-    # --- Xử lý bảng KEYWORDS (Dimension) ---
     print("\n--- Xử lý bảng KEYWORDS (Dimension) ---")
     keywords_dim_intermediate_df = raw_df_with_article_id \
         .filter(col("tu_khoa").isNotNull() & (expr("size(tu_khoa) > 0"))) \
@@ -256,7 +246,6 @@ try:
         .select("KeywordID", "KeywordText") \
         .dropDuplicates(["KeywordID"])
 
-    # --- Xử lý bảng REFERENCES_TABLE (Dimension) ---
     print("\n--- Xử lý bảng REFERENCES_TABLE (Dimension) ---")
     references_dim_intermediate_df = raw_df_with_article_id \
         .filter(col("tham_khao").isNotNull() & (expr("size(tham_khao) > 0"))) \
@@ -268,7 +257,6 @@ try:
         .select("ReferenceID", "ReferenceText") \
         .dropDuplicates(["ReferenceID"])
 
-    # --- Xử lý bảng ARTICLES ---
     print("\n--- Xử lý bảng ARTICLES ---")
     articles_base_transformed_df = raw_df_with_article_id \
         .withColumn("PublicationDate", to_timestamp(col("ngay_xuat_ban"))) \
@@ -279,7 +267,7 @@ try:
     articles_joined_df = articles_base_aliased \
         .join(broadcast(authors_df.alias("auth")), col("base.tac_gia") == col("auth.AuthorName"), "left_outer") \
         .join(broadcast(topics_df.alias("top")), col("base.topic") == col("top.TopicName"), "left_outer") \
-        .join(broadcast(subtopics_df.alias("sub")), # Giả sử subtopics_df cũng tương đối nhỏ
+        .join(broadcast(subtopics_df.alias("sub")),
               (col("base.sub_topic") == col("sub.SubTopicName")) & \
               (col("top.TopicID") == col("sub.TopicID")),
               "left_outer")
@@ -303,7 +291,7 @@ try:
     g_articles_records_to_write.set(count_articles_to_write)
 
     if count_articles_to_write > 0:
-        print("Đang tính toán số lượng bài báo theo ngày xuất bản...")
+        print("Đang tính toán số lượng bài báo theo ngày xuất bản (giờ VN)...")
         articles_by_date_collected = articles_to_write_df \
             .withColumn("PublicationDateString", date_format(col("PublicationDate"), "yyyy-MM-dd")) \
             .groupBy("PublicationDateString") \
@@ -327,7 +315,6 @@ try:
     else:
         print("Không có bài báo nào để tính toán metrics theo ngày/chủ đề.")
 
-    # --- Xử lý bảng ARTICLEKEYWORDS (Junction) ---
     print("\n--- Xử lý bảng ARTICLEKEYWORDS (Junction) ---")
     article_keywords_exploded_df = raw_df_with_article_id \
         .filter(col("tu_khoa").isNotNull() & (expr("size(tu_khoa) > 0"))) \
@@ -339,7 +326,6 @@ try:
         .select("ArticleID", "KeywordID") \
         .distinct()
 
-    # --- Xử lý bảng ARTICLEREFERENCES (Junction) ---
     print("\n--- Xử lý bảng ARTICLEREFERENCES (Junction) ---")
     article_references_exploded_df = raw_df_with_article_id \
         .filter(col("tham_khao").isNotNull() & (expr("size(tham_khao) > 0"))) \
@@ -351,10 +337,8 @@ try:
         .select("ArticleID", "ReferenceID") \
         .distinct()
 
-    # --- Xử lý bảng COMMENTS và COMMENTINTERACTIONS ---
     print("\n--- Xử lý bảng COMMENTS và COMMENTINTERACTIONS ---")
     
-    # TỐI ƯU: Thay thế UDF bằng hàm Spark SQL
     comments_parsed_base_df = raw_df_with_article_id \
         .select("ArticleID", "top_binh_luan") \
         .withColumn("parsed_comments_str",
@@ -426,34 +410,29 @@ try:
                 .withColumn("LastProcessedTimestamp", current_timestamp()) \
                 .dropDuplicates(["CommentInteractionID"])
 
-    # --- HÀM GHI DỮ LIỆU SỬ DỤNG MERGE INTO ---
     def write_iceberg_table_with_merge(df_to_write, table_name_in_db, primary_key_cols,
-                                     db_name=CLEAN_DATABASE_NAME, catalog_name=clean_catalog_name,
-                                     partition_cols=None, create_table_if_not_exists=True,
-                                     is_articles_table=False):
+                                       db_name=CLEAN_DATABASE_NAME, catalog_name=clean_catalog_name,
+                                       partition_cols=None, create_table_if_not_exists=True,
+                                       is_articles_table=False):
         full_table_name = f"`{catalog_name}`.`{db_name}`.`{table_name_in_db}`"
-        # TỐI ƯU: Tên view tạm thời duy nhất hơn
         temp_view_name = f"{table_name_in_db}_source_view_{INSTANCE_ID}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
 
-        write_articles_start_time_local = None # Đổi tên để tránh xung đột với biến global tiềm năng (dù không có)
+        write_start_time_local = None
         if is_articles_table:
-            write_articles_start_time_local = time.time()
+            write_start_time_local = time.time()
 
-        # TỐI ƯU: Kiểm tra DF rỗng trước khi thực hiện thao tác ghi
         if df_to_write.rdd.isEmpty():
             print(f"DataFrame cho bảng '{full_table_name}' rỗng. Bỏ qua ghi.")
             if is_articles_table:
-                 g_articles_write_duration.set(0) # Vẫn set duration là 0 nếu là bảng articles nhưng rỗng
+                 g_articles_write_duration.set(0) 
             return
 
         df_to_write.createOrReplaceTempView(temp_view_name)
         print(f"Đang chuẩn bị MERGE INTO bảng: {full_table_name} từ view {temp_view_name}")
 
         try:
-            # TỐI ƯU: Xử lý dấu gạch dưới trong tên bảng cho LIKE
-            table_exists_query_table_name = table_name_in_db.replace("_", "\\_") # Escape for SQL LIKE
+            table_exists_query_table_name = table_name_in_db.replace("_", "\\_") 
             table_exists = spark.sql(f"SHOW TABLES IN `{catalog_name}`.`{db_name}` LIKE '{table_exists_query_table_name}'").count() > 0
-
 
             if not table_exists:
                 if create_table_if_not_exists:
@@ -471,7 +450,6 @@ try:
                 merge_condition_parts = [f"target.{pk_col} = source.{pk_col}" for pk_col in primary_key_cols]
                 merge_condition = " AND ".join(merge_condition_parts)
 
-                # Sử dụng "UPDATE SET *" và "INSERT *" đơn giản hơn nếu schema nguồn và đích (cho các cột liên quan) khớp nhau.
                 merge_sql = f"""
                 MERGE INTO {full_table_name} AS target
                 USING {temp_view_name} AS source
@@ -487,24 +465,21 @@ try:
 
         except Exception as e:
             print(f"Lỗi khi ghi/MERGE INTO bảng '{full_table_name}': {e}")
-            if is_articles_table and write_articles_start_time_local is not None:
-                g_articles_write_duration.set(time.time() - write_articles_start_time_local)
+            if is_articles_table and write_start_time_local is not None:
+                g_articles_write_duration.set(time.time() - write_start_time_local)
             raise
         finally:
             spark.catalog.dropTempView(temp_view_name)
             print(f"Đã xóa temp view: {temp_view_name}")
-            if is_articles_table and write_articles_start_time_local is not None:
-                # Đảm bảo chỉ set một lần nếu lỗi xảy ra trong khối try
+            if is_articles_table and write_start_time_local is not None:
                 current_metric_value = None
-                try: # Cố gắng lấy giá trị hiện tại một cách an toàn
+                try: 
                     current_metric_value = g_articles_write_duration._value
-                except AttributeError: # Nếu _value không tồn tại (metric chưa được set)
+                except AttributeError: 
                     pass
-                if current_metric_value is None: # Chỉ set nếu chưa được set bởi khối except ở trên
-                     g_articles_write_duration.set(time.time() - write_articles_start_time_local)
+                if current_metric_value is None: 
+                    g_articles_write_duration.set(time.time() - write_start_time_local)
 
-
-    # --- GHI DỮ LIỆU VÀO CÁC BẢNG CLEAN ---
     print("\n--- Bắt đầu ghi dữ liệu vào các bảng CLEAN sử dụng MERGE ---")
 
     write_iceberg_table_with_merge(authors_df, "authors", primary_key_cols=["AuthorID"])
@@ -536,18 +511,17 @@ except SystemExit as se:
     job_succeeded_flag = False 
 except Exception as e:
     print(f"LỖI CHÍNH TRONG QUÁ TRÌNH ETL: {e}")
-    traceback.print_exc() # TỐI ƯU: In traceback đầy đủ
+    traceback.print_exc() 
     job_succeeded_flag = False
 finally:
     overall_job_duration = time.time() - overall_job_start_time
     g_job_duration.set(overall_job_duration)
 
-    # TỐI ƯU: Đơn giản hóa logic set g_job_status
     if job_succeeded_flag:
-        g_job_status.set(1) # Thành công
+        g_job_status.set(1) 
         g_job_last_success_ts.set(int(time.time()))
     else:
-        g_job_status.set(0) # Thất bại (bao gồm cả SystemExit và Exception khác)
+        g_job_status.set(0)
 
     if actual_start_date_for_metric:
         g_processed_date_start_ts.set(int(actual_start_date_for_metric.timestamp()))
@@ -557,11 +531,10 @@ finally:
     push_metrics_to_gateway()
 
     if 'spark' in locals() and spark:
-        # TỐI ƯU: Kiểm tra storageLevel trước khi unpersist
         if 'articles_to_write_df' in locals() and \
            hasattr(articles_to_write_df, 'storageLevel') and \
            articles_to_write_df.storageLevel.useMemory:
-                 articles_to_write_df.unpersist()
-                 print("Đã unpersist articles_to_write_df.")
+                articles_to_write_df.unpersist()
+                print("Đã unpersist articles_to_write_df.")
         spark.stop()
-        print("Spark session đã được dừng.")   
+        print("Spark session đã được dừng.")

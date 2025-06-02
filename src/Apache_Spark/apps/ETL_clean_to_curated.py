@@ -13,6 +13,7 @@ import time
 from dotenv import load_dotenv
 import os
 from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
+import pytz
 
 load_dotenv()
 
@@ -32,18 +33,22 @@ CURATED_DATABASE_NAME = "news_curated_db"
 
 app_name = "NewsETLCleanToCurated"
 
+VIETNAM_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
+PYTHON_DATE_FORMAT_PATTERN = "%Y-%m-%d"
+SPARK_SQL_DATE_FORMAT_PATTERN = "yyyy-MM-dd"
+
 arg_parser = argparse.ArgumentParser(description="Tham số cho ngày bắt đầu và kết thúc cho ETL")
 arg_parser.add_argument(
     "--etl-start-date",
     type=str,
     default=None,
-    help="Start date (YYYY-MM-DD). Mặc định (last 7 days)."
+    help=f"Start date ({PYTHON_DATE_FORMAT_PATTERN}). Mặc định (last 7 days, giờ VN)."
 )
 arg_parser.add_argument(
     "--etl-end-date",
     type=str,
     default=None,
-    help="End date (YYYY-MM-DD). Mặc định (last 7 days)."
+    help=f"End date ({PYTHON_DATE_FORMAT_PATTERN}). Mặc định (last 7 days, giờ VN)."
 )
 arg_parser.add_argument(
     "--airflow-run-id",
@@ -63,18 +68,18 @@ INSTANCE_ID = args.airflow_run_id
 registry = CollectorRegistry()
 METRIC_PREFIX = "etl"
 
-g_job_duration = Gauge(f'{METRIC_PREFIX}_job_duration_seconds', 'Tổng thời gian chạy của job ETL', registry=registry)
-g_job_status = Gauge(f'{METRIC_PREFIX}_job_status', 'Trạng thái kết thúc job (1=thành công, 0=thất bại)', registry=registry)
-g_job_last_success_ts = Gauge(f'{METRIC_PREFIX}_job_last_success_timestamp', 'Unix timestamp của lần chạy job thành công cuối cùng', registry=registry)
-g_processed_date_start_ts = Gauge(f'{METRIC_PREFIX}_job_processed_date_range_start_timestamp', 'Unix timestamp của ngày bắt đầu xử lý', registry=registry)
-g_processed_date_end_ts = Gauge(f'{METRIC_PREFIX}_job_processed_date_range_end_timestamp', 'Unix timestamp của ngày kết thúc xử lý', registry=registry)
+g_job_duration = Gauge(f'{METRIC_PREFIX}_job_duration_seconds', 'Tổng thời gian chạy của job ETL (CleanToCurated)', registry=registry)
+g_job_status = Gauge(f'{METRIC_PREFIX}_job_status', 'Trạng thái kết thúc job (CleanToCurated) (1=thành công, 0=thất bại)', registry=registry)
+g_job_last_success_ts = Gauge(f'{METRIC_PREFIX}_job_last_success_timestamp', 'Unix timestamp của lần chạy job (CleanToCurated) thành công cuối cùng', registry=registry)
+g_processed_date_start_ts = Gauge(f'{METRIC_PREFIX}_job_processed_date_range_start_timestamp', 'Unix timestamp của ngày bắt đầu xử lý (0h giờ VN)', registry=registry)
+g_processed_date_end_ts = Gauge(f'{METRIC_PREFIX}_job_processed_date_range_end_timestamp', 'Unix timestamp của ngày kết thúc xử lý (0h giờ VN)', registry=registry)
 g_valid_url_records_count = Gauge(f'{METRIC_PREFIX}_valid_url_records_processed_count', 'Số lượng bản ghi input articles (từ Clean) được xử lý', registry=registry)
 g_read_stage_duration = Gauge(f'{METRIC_PREFIX}_read_stage_duration_seconds', 'Thời gian đọc dữ liệu từ Clean zone', registry=registry)
 g_articles_records_to_write = Gauge(f'{METRIC_PREFIX}_articles_records_to_write_count', 'Số lượng bản ghi fact_article_publication chuẩn bị để ghi', registry=registry)
 g_articles_write_duration = Gauge(f'{METRIC_PREFIX}_articles_write_duration_seconds', 'Thời gian ghi bảng fact_article_publication', registry=registry)
 g_articles_by_pub_date_count = Gauge(
     f'{METRIC_PREFIX}_articles_by_publication_date_count',
-    'Số lượng bài báo (fact_article_publication) theo ngày xuất bản',
+    'Số lượng bài báo (fact_article_publication) theo ngày xuất bản (giờ VN)',
     ['publication_date'],
     registry=registry
 )
@@ -110,7 +115,8 @@ try:
         .config("spark.hadoop.fs.s3a.secret.key", minio_secret_key) \
         .config("spark.hadoop.fs.s3a.path.style.access", "true") \
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
-        .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
+        .config("spark.sql.sources.partitionOverwriteMode", "dynamic") \
+        .config("spark.sql.session.timeZone", "Asia/Ho_Chi_Minh")
 
     spark_builder = spark_builder.config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,org.projectnessie.spark.extensions.NessieSparkSessionExtensions")
 
@@ -130,29 +136,32 @@ try:
 
     spark = spark_builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
-    print(f"SparkSession đã được khởi tạo cho: {app_name}.")
+    print(f"SparkSession đã được khởi tạo cho: {app_name} với múi giờ session: {spark.conf.get('spark.sql.session.timeZone')}.")
 
     def get_date_range(start_date_str=None, end_date_str=None, default_days=7):
         global actual_start_date_process_for_metric, actual_end_date_process_for_metric
-        date_format_str = "%Y-%m-%d"
-        calculated_start_date, calculated_end_date = None, None
+        calculated_start_date_aware, calculated_end_date_aware = None, None
+        
         if start_date_str and end_date_str:
             try:
-                calculated_start_date = datetime.strptime(start_date_str, date_format_str)
-                calculated_end_date = datetime.strptime(end_date_str, date_format_str)
-                print(f"Sử dụng khoảng thời gian tùy chỉnh: {calculated_start_date.strftime(date_format_str)} đến {calculated_end_date.strftime(date_format_str)}")
+                start_date_naive = datetime.strptime(start_date_str, PYTHON_DATE_FORMAT_PATTERN)
+                end_date_naive = datetime.strptime(end_date_str, PYTHON_DATE_FORMAT_PATTERN)
+                calculated_start_date_aware = VIETNAM_TZ.localize(start_date_naive)
+                calculated_end_date_aware = VIETNAM_TZ.localize(end_date_naive)
+                print(f"Sử dụng khoảng thời gian tùy chỉnh (giờ VN): {calculated_start_date_aware.strftime(PYTHON_DATE_FORMAT_PATTERN)} đến {calculated_end_date_aware.strftime(PYTHON_DATE_FORMAT_PATTERN)}")
             except ValueError:
-                print(f"Lỗi định dạng ngày: {start_date_str}, {end_date_str}. Vui lòng dùng YYYY-MM-DD.")
+                print(f"Lỗi định dạng ngày: '{start_date_str}', '{end_date_str}'. Vui lòng dùng định dạng '{PYTHON_DATE_FORMAT_PATTERN}'.")
                 g_job_status.set(0)
                 raise
         else:
-            calculated_end_date = datetime.now() - timedelta(days=1)
-            calculated_start_date = calculated_end_date - timedelta(days=default_days - 1)
-            print(f"Sử dụng khoảng thời gian mặc định: {default_days} ngày, từ {calculated_start_date.strftime(date_format_str)} đến {calculated_end_date.strftime(date_format_str)}")
+            now_in_vietnam = datetime.now(VIETNAM_TZ)
+            calculated_end_date_aware = (now_in_vietnam - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            calculated_start_date_aware = calculated_end_date_aware - timedelta(days=default_days - 1)
+            print(f"Sử dụng khoảng thời gian mặc định (giờ VN): {default_days} ngày, từ {calculated_start_date_aware.strftime(PYTHON_DATE_FORMAT_PATTERN)} đến {calculated_end_date_aware.strftime(PYTHON_DATE_FORMAT_PATTERN)}")
         
-        actual_start_date_process_for_metric = calculated_start_date
-        actual_end_date_process_for_metric = calculated_end_date
-        return calculated_start_date, calculated_end_date
+        actual_start_date_process_for_metric = calculated_start_date_aware
+        actual_end_date_process_for_metric = calculated_end_date_aware
+        return calculated_start_date_aware, calculated_end_date_aware
 
     cached_dataframes = {}
     def read_iceberg_table_with_cache(table_name, catalog_name, db_name, date_filter_col=None, start_date=None, end_date=None, use_cache=False):
@@ -166,9 +175,11 @@ try:
         try:
             df = spark.read.format("iceberg").load(full_table_name)
             if date_filter_col and start_date and end_date:
-                print(f"Áp dụng bộ lọc ngày trên cột '{date_filter_col}': từ {start_date.strftime('%Y-%m-%d')} đến {end_date.strftime('%Y-%m-%d')}")
-                df = df.filter(col(date_filter_col) >= lit(start_date.strftime('%Y-%m-%d')).cast(DateType())) \
-                      .filter(col(date_filter_col) <= lit(end_date.strftime('%Y-%m-%d')).cast(DateType()))
+                start_date_str_for_filter = start_date.strftime(PYTHON_DATE_FORMAT_PATTERN)
+                end_date_str_for_filter = end_date.strftime(PYTHON_DATE_FORMAT_PATTERN)
+                print(f"Áp dụng bộ lọc ngày trên cột '{date_filter_col}': từ {start_date_str_for_filter} đến {end_date_str_for_filter} (giờ VN)")
+                df = df.filter(col(date_filter_col) >= lit(start_date_str_for_filter).cast(DateType())) \
+                       .filter(col(date_filter_col) <= lit(end_date_str_for_filter).cast(DateType()))
             
             if use_cache:
                 df = df.cache()
@@ -202,10 +213,14 @@ try:
 
         if is_fact_article_publication_table:
             write_fact_article_publication_start_time = time.time()
+            current_count = df_to_write.count()
+            g_articles_records_to_write.set(current_count)
+            print(f"Đã set metric 'g_articles_records_to_write_count' (cho {table_name}) = {current_count}")
 
         try:
-            table_exists = spark.sql(f"SHOW TABLES IN `{catalog_name}`.`{db_name}` LIKE '{table_name.split('.')[-1]}'").count() > 0
-
+            table_exists_query_table_name = table_name.split('.')[-1].replace("_", "\\_")
+            table_exists = spark.sql(f"SHOW TABLES IN `{catalog_name}`.`{db_name}` LIKE '{table_exists_query_table_name}'").count() > 0
+            
             if write_mode == "merge":
                 if not primary_key_cols_for_merge:
                     raise ValueError("Chế độ 'merge' yêu cầu 'primary_key_cols_for_merge'.")
@@ -251,7 +266,9 @@ try:
         finally:
             spark.catalog.dropTempView(temp_view_name)
             if is_fact_article_publication_table and write_fact_article_publication_start_time is not None:
-                g_articles_write_duration.set(time.time() - write_fact_article_publication_start_time)
+                duration_val = g_articles_write_duration._value if hasattr(g_articles_write_duration, '_value') else None
+                if duration_val is None or (time.time() - write_fact_article_publication_start_time) > 0 :
+                     g_articles_write_duration.set(time.time() - write_fact_article_publication_start_time)
 
     start_date_process, end_date_process = get_date_range(ETL_START_DATE_STR, ETL_END_DATE_STR)
 
@@ -265,8 +282,8 @@ try:
     base_comment_interactions_clean_df = read_iceberg_table_with_cache("comment_interactions", clean_catalog_name, CLEAN_DATABASE_NAME, use_cache=True)
 
     articles_clean_df = read_iceberg_table_with_cache("articles", clean_catalog_name, CLEAN_DATABASE_NAME,
-                                                     date_filter_col="PublicationDate",
-                                                     start_date=start_date_process, end_date=end_date_process, use_cache=True)
+                                                      date_filter_col="PublicationDate",
+                                                      start_date=start_date_process, end_date=end_date_process, use_cache=True)
     
     count_input_articles = 0
     if not articles_clean_df.rdd.isEmpty():
@@ -275,25 +292,23 @@ try:
     print(f"Đã set metric 'g_valid_url_records_count' (số bài báo đầu vào từ Clean) = {count_input_articles}")
 
     if count_input_articles == 0:
-        print(f"Không có bài báo nào trong khoảng từ {start_date_process.strftime('%Y-%m-%d')} đến {end_date_process.strftime('%Y-%m-%d')}. Dừng ETL.")
+        print(f"Không có bài báo nào trong khoảng từ {start_date_process.strftime(PYTHON_DATE_FORMAT_PATTERN)} đến {end_date_process.strftime(PYTHON_DATE_FORMAT_PATTERN)}. Dừng ETL.")
         job_succeeded_flag = True
-        g_job_status.set(1)
         g_read_stage_duration.set(time.time() - read_clean_stage_start_time)
         g_articles_records_to_write.set(0)
         g_articles_write_duration.set(0)
-        raise SystemExit("Dừng job vì không có dữ liệu articles đầu vào từ Clean.")
+    else:
+        processed_article_ids_df = articles_clean_df.select("ArticleID").distinct()
+        
+        article_keywords_clean_df = read_iceberg_table_with_cache("article_keywords", clean_catalog_name, CLEAN_DATABASE_NAME, use_cache=True) \
+            .join(processed_article_ids_df, ["ArticleID"], "inner")
+        article_references_clean_df = read_iceberg_table_with_cache("article_references", clean_catalog_name, CLEAN_DATABASE_NAME, use_cache=True) \
+            .join(processed_article_ids_df, ["ArticleID"], "inner")
+        comments_clean_df = read_iceberg_table_with_cache("comments", clean_catalog_name, CLEAN_DATABASE_NAME, use_cache=True) \
+            .join(processed_article_ids_df, ["ArticleID"], "inner")
 
-    processed_article_ids_df = articles_clean_df.select("ArticleID").distinct()
-    
-    article_keywords_clean_df = read_iceberg_table_with_cache("article_keywords", clean_catalog_name, CLEAN_DATABASE_NAME, use_cache=True) \
-        .join(processed_article_ids_df, ["ArticleID"], "inner")
-    article_references_clean_df = read_iceberg_table_with_cache("article_references", clean_catalog_name, CLEAN_DATABASE_NAME, use_cache=True) \
-        .join(processed_article_ids_df, ["ArticleID"], "inner")
-    comments_clean_df = read_iceberg_table_with_cache("comments", clean_catalog_name, CLEAN_DATABASE_NAME, use_cache=True) \
-        .join(processed_article_ids_df, ["ArticleID"], "inner")
-
-    processed_comment_ids_df = comments_clean_df.select("CommentID").distinct()
-    comment_interactions_for_facts_df = base_comment_interactions_clean_df.join(processed_comment_ids_df, ["CommentID"], "inner")
+        processed_comment_ids_df = comments_clean_df.select("CommentID").distinct()
+        comment_interactions_for_facts_df = base_comment_interactions_clean_df.join(processed_comment_ids_df, ["CommentID"], "inner")
     
     g_read_stage_duration.set(time.time() - read_clean_stage_start_time)
     print(f"Đã hoàn thành Bước 1 - Đọc dữ liệu từ Clean. Thời gian: {time.time() - read_clean_stage_start_time:.2f}s")
@@ -315,7 +330,7 @@ try:
         .withColumn("LastUpdatedTimestamp_Curated", current_ts) \
         .dropDuplicates(["AuthorID_NK"])
     write_curated_iceberg_table(dim_author_df_to_write, "dim_author", write_mode="merge", primary_key_cols_for_merge=["AuthorID_NK"])
-    dim_author_df = dim_author_df_to_write.alias("dim_author_cached").cache()
+    dim_author_df = read_iceberg_table_with_cache("dim_author", curated_catalog_name, CURATED_DATABASE_NAME, use_cache=True).alias("dim_author_cached")
 
     print("Đang xử lý dim_topic...")
     dim_topic_df_to_write = topics_clean_df \
@@ -324,23 +339,24 @@ try:
         .withColumn("LastUpdatedTimestamp_Curated", current_ts) \
         .dropDuplicates(["TopicID_NK"])
     write_curated_iceberg_table(dim_topic_df_to_write, "dim_topic", write_mode="merge", primary_key_cols_for_merge=["TopicID_NK"])
-    dim_topic_df = dim_topic_df_to_write.alias("dim_topic_cached").cache()
+    dim_topic_df = read_iceberg_table_with_cache("dim_topic", curated_catalog_name, CURATED_DATABASE_NAME, use_cache=True).alias("dim_topic_cached")
 
     print("Đang xử lý dim_sub_topic...")
+    refreshed_dim_topic_df = read_iceberg_table_with_cache("dim_topic", curated_catalog_name, CURATED_DATABASE_NAME, use_cache=False)
     dim_subtopic_df_to_write = subtopics_clean_df \
-        .join(dim_topic_df, subtopics_clean_df.TopicID == col("dim_topic_cached.TopicID_NK"), "left_outer") \
+        .join(refreshed_dim_topic_df, subtopics_clean_df.TopicID == refreshed_dim_topic_df.TopicID_NK, "left_outer") \
         .withColumn("SubTopicKey", xxhash64(col("SubTopicID"))) \
         .select(
             col("SubTopicKey"),
             col("SubTopicID").alias("SubTopicID_NK"),
             col("SubTopicName"),
-            col("dim_topic_cached.TopicKey").alias("ParentTopicKey"),
-            col("dim_topic_cached.TopicName").alias("ParentTopicName")
+            refreshed_dim_topic_df.TopicKey.alias("ParentTopicKey"),
+            refreshed_dim_topic_df.TopicName.alias("ParentTopicName")
         ) \
         .withColumn("LastUpdatedTimestamp_Curated", current_ts) \
         .dropDuplicates(["SubTopicID_NK"])
     write_curated_iceberg_table(dim_subtopic_df_to_write, "dim_sub_topic", write_mode="merge", primary_key_cols_for_merge=["SubTopicID_NK"])
-    dim_subtopic_df = dim_subtopic_df_to_write.alias("dim_subtopic_cached").cache()
+    dim_subtopic_df = read_iceberg_table_with_cache("dim_sub_topic", curated_catalog_name, CURATED_DATABASE_NAME, use_cache=True).alias("dim_subtopic_cached")
 
     print("Đang xử lý dim_keyword...")
     dim_keyword_df_to_write = keywords_clean_df \
@@ -349,7 +365,7 @@ try:
         .withColumn("LastUpdatedTimestamp_Curated", current_ts) \
         .dropDuplicates(["KeywordID_NK"])
     write_curated_iceberg_table(dim_keyword_df_to_write, "dim_keyword", write_mode="merge", primary_key_cols_for_merge=["KeywordID_NK"])
-    dim_keyword_df = dim_keyword_df_to_write.alias("dim_keyword_cached").cache()
+    dim_keyword_df = read_iceberg_table_with_cache("dim_keyword", curated_catalog_name, CURATED_DATABASE_NAME, use_cache=True).alias("dim_keyword_cached")
 
     print("Đang xử lý dim_reference_source...")
     dim_referencesource_df_to_write = references_clean_df \
@@ -358,226 +374,234 @@ try:
         .withColumn("LastUpdatedTimestamp_Curated", current_ts) \
         .dropDuplicates(["ReferenceID_NK"])
     write_curated_iceberg_table(dim_referencesource_df_to_write, "dim_reference_source", write_mode="merge", primary_key_cols_for_merge=["ReferenceID_NK"])
-    dim_referencesource_df = dim_referencesource_df_to_write.alias("dim_referencesource_cached").cache()
+    dim_referencesource_df = read_iceberg_table_with_cache("dim_reference_source", curated_catalog_name, CURATED_DATABASE_NAME, use_cache=True).alias("dim_referencesource_cached")
 
     print("Đang xử lý dim_interaction_type...")
-    dim_interactiontype_df_to_write = base_comment_interactions_clean_df \
-        .select(col("InteractionType").alias("InteractionTypeName")) \
-        .filter(col("InteractionTypeName").isNotNull()) \
-        .distinct() \
-        .withColumn("InteractionTypeKey", xxhash64(col("InteractionTypeName"))) \
-        .select("InteractionTypeKey", "InteractionTypeName") \
-        .withColumn("LastUpdatedTimestamp_Curated", current_ts) \
-        .dropDuplicates(["InteractionTypeName"])
-    write_curated_iceberg_table(dim_interactiontype_df_to_write, "dim_interaction_type", write_mode="merge", primary_key_cols_for_merge=["InteractionTypeName"])
-    dim_interactiontype_df = dim_interactiontype_df_to_write.alias("dim_interactiontype_cached").cache()
-
-    print("\n--- Bước 3: Xây dựng Fact Tables cho CURATED ---")
-
-    print("Đang xử lý fact_article_publication...")
-    tagged_keyword_counts = article_keywords_clean_df \
-        .groupBy("ArticleID") \
-        .agg(countDistinct("KeywordID").alias("TaggedKeywordCountInArticle"))
-
-    reference_source_counts = article_references_clean_df \
-        .groupBy("ArticleID") \
-        .agg(countDistinct("ReferenceID").alias("ReferenceSourceCountInArticle"))
-
-    articles_with_text_metrics = articles_clean_df \
-        .withColumn("WordCountInMainContent", when(col("MainContent").isNotNull(), size(split(col("MainContent"), " "))).otherwise(0)) \
-        .withColumn("CharacterCountInMainContent", when(col("MainContent").isNotNull(), length(col("MainContent"))).otherwise(0)) \
-        .withColumn("EstimatedReadTimeMinutes", coalesce(_round(col("WordCountInMainContent") / 200.0, 2).cast(FloatType()), lit(0.0)))
-
-    fact_article_publication_source = articles_with_text_metrics \
-        .join(tagged_keyword_counts, articles_with_text_metrics.ArticleID == tagged_keyword_counts.ArticleID, "left_outer") \
-        .join(reference_source_counts, articles_with_text_metrics.ArticleID == reference_source_counts.ArticleID, "left_outer") \
-        .select(
-            articles_with_text_metrics.ArticleID.alias("ArticleID_NK"),
-            articles_with_text_metrics.Title.alias("ArticleTitle"),
-            articles_with_text_metrics.Description.alias("ArticleDescription"),
-            articles_with_text_metrics.PublicationDate.alias("ArticlePublicationTimestamp"),
-            articles_with_text_metrics.OpinionCount,
-            coalesce(articles_with_text_metrics.WordCountInMainContent, lit(0)).alias("WordCountInMainContent"),
-            coalesce(articles_with_text_metrics.CharacterCountInMainContent, lit(0)).alias("CharacterCountInMainContent"),
-            col("EstimatedReadTimeMinutes"),
-            coalesce(tagged_keyword_counts.TaggedKeywordCountInArticle, lit(0)).alias("TaggedKeywordCountInArticle"),
-            coalesce(reference_source_counts.ReferenceSourceCountInArticle, lit(0)).alias("ReferenceSourceCountInArticle"),
-            articles_with_text_metrics.AuthorID.alias("AuthorID_lookup"),
-            articles_with_text_metrics.TopicID.alias("TopicID_lookup"),
-            articles_with_text_metrics.SubTopicID.alias("SubTopicID_lookup")
-        )
-
-    fact_article_publication_df = fact_article_publication_source \
-        .withColumn("PublicationDateOnly", to_date(col("ArticlePublicationTimestamp"))) \
-        .join(dim_date_df, col("PublicationDateOnly") == dim_date_df.FullDateAlternateKey, "left_outer") \
-        .join(dim_author_df, col("AuthorID_lookup") == col("dim_author_cached.AuthorID_NK"), "left_outer") \
-        .join(dim_topic_df, col("TopicID_lookup") == col("dim_topic_cached.TopicID_NK"), "left_outer") \
-        .join(dim_subtopic_df, col("SubTopicID_lookup") == col("dim_subtopic_cached.SubTopicID_NK"), "left_outer") \
-        .select(
-            dim_date_df.DateKey.alias("PublicationDateKey"),
-            col("ArticlePublicationTimestamp"),
-            col("dim_author_cached.AuthorKey"),
-            col("dim_topic_cached.TopicKey"),
-            col("dim_subtopic_cached.SubTopicKey"),
-            col("ArticleID_NK"),
-            col("ArticleTitle"),
-            col("ArticleDescription"),
-            lit(1).alias("PublishedArticleCount"),
-            col("OpinionCount"),
-            col("WordCountInMainContent"),
-            col("CharacterCountInMainContent"),
-            col("EstimatedReadTimeMinutes"),
-            col("TaggedKeywordCountInArticle"),
-            col("ReferenceSourceCountInArticle")
-        ).na.fill({"PublicationDateKey": -1, "AuthorKey": -1, "TopicKey": -1, "SubTopicKey": -1})
-    
-    fact_article_publication_df.cache()
-    count_fact_articles_to_write = fact_article_publication_df.count()
-    g_articles_records_to_write.set(count_fact_articles_to_write)
-    print(f"Đã set metric 'g_articles_records_to_write_count' = {count_fact_articles_to_write}")
-
-    if count_fact_articles_to_write > 0:
-        print("Đang tính toán số lượng bài báo theo ngày xuất bản (fact)...")
-        articles_by_date_collected = fact_article_publication_df \
-            .withColumn("PublicationDateString", date_format(col("ArticlePublicationTimestamp"), "yyyy-MM-dd")) \
-            .groupBy("PublicationDateString") \
-            .count() \
-            .collect()
-        for row in articles_by_date_collected:
-            if row["PublicationDateString"]:
-                g_articles_by_pub_date_count.labels(publication_date=row["PublicationDateString"]).set(row["count"])
-        print("Đã set metric số lượng bài báo theo ngày xuất bản (fact).")
-
-        print("Đang tính toán số lượng bài báo theo chủ đề (fact)...")
-        
-        projected_topics_for_join = dim_topic_df.select(
-            col("dim_topic_cached.TopicKey"),
-            col("dim_topic_cached.TopicName").alias("unique_topic_name_for_grouping")
-        )
-
-        articles_by_topic_collected = fact_article_publication_df \
-            .join(projected_topics_for_join, fact_article_publication_df.TopicKey == projected_topics_for_join.TopicKey, "inner") \
-            .groupBy("unique_topic_name_for_grouping") \
-            .count() \
-            .collect()
-
-        for row in articles_by_topic_collected:
-            if row["unique_topic_name_for_grouping"]:
-                g_articles_by_topic_count.labels(topic_name=row["unique_topic_name_for_grouping"]).set(row["count"])
-        print("Đã set metric số lượng bài báo theo chủ đề (fact).")
-        
-        write_curated_iceberg_table(fact_article_publication_df, "fact_article_publication",
-                                     write_mode="overwrite_dynamic_partitions",
-                                     partition_cols=["ArticlePublicationTimestamp"],
-                                     is_fact_article_publication_table=True)
+    dim_interactiontype_df_to_write = spark.createDataFrame([], StructType([StructField("InteractionTypeKey", LongType(), True), StructField("InteractionTypeName", StringType(), True), StructField("LastUpdatedTimestamp_Curated", TimestampType(), True)]))
+    if not base_comment_interactions_clean_df.rdd.isEmpty() and "InteractionType" in base_comment_interactions_clean_df.columns:
+        dim_interactiontype_df_to_write = base_comment_interactions_clean_df \
+            .select(col("InteractionType").alias("InteractionTypeName")) \
+            .filter(col("InteractionTypeName").isNotNull()) \
+            .distinct() \
+            .withColumn("InteractionTypeKey", xxhash64(col("InteractionTypeName"))) \
+            .select("InteractionTypeKey", "InteractionTypeName") \
+            .withColumn("LastUpdatedTimestamp_Curated", current_ts) \
+            .dropDuplicates(["InteractionTypeName"])
     else:
-        print("Không có dữ liệu fact_article_publication để ghi hoặc tính metrics chi tiết.")
+        print("Không có dữ liệu InteractionType từ base_comment_interactions_clean_df hoặc cột không tồn tại.")
+
+    write_curated_iceberg_table(dim_interactiontype_df_to_write, "dim_interaction_type", write_mode="merge", primary_key_cols_for_merge=["InteractionTypeName"])
+    dim_interactiontype_df = read_iceberg_table_with_cache("dim_interaction_type", curated_catalog_name, CURATED_DATABASE_NAME, use_cache=True).alias("dim_interactiontype_cached")
+
+    if count_input_articles > 0:
+        print("\n--- Bước 3: Xây dựng Fact Tables cho CURATED ---")
+
+        print("Đang xử lý fact_article_publication...")
+        tagged_keyword_counts = article_keywords_clean_df \
+            .groupBy("ArticleID") \
+            .agg(countDistinct("KeywordID").alias("TaggedKeywordCountInArticle"))
+
+        reference_source_counts = article_references_clean_df \
+            .groupBy("ArticleID") \
+            .agg(countDistinct("ReferenceID").alias("ReferenceSourceCountInArticle"))
+
+        articles_with_text_metrics = articles_clean_df \
+            .withColumn("WordCountInMainContent", when(col("MainContent").isNotNull(), size(split(col("MainContent"), " "))).otherwise(0)) \
+            .withColumn("CharacterCountInMainContent", when(col("MainContent").isNotNull(), length(col("MainContent"))).otherwise(0)) \
+            .withColumn("EstimatedReadTimeMinutes", coalesce(_round(col("WordCountInMainContent") / 200.0, 2).cast(FloatType()), lit(0.0)))
+
+        fact_article_publication_source = articles_with_text_metrics \
+            .join(tagged_keyword_counts, articles_with_text_metrics.ArticleID == tagged_keyword_counts.ArticleID, "left_outer") \
+            .join(reference_source_counts, articles_with_text_metrics.ArticleID == reference_source_counts.ArticleID, "left_outer") \
+            .select(
+                articles_with_text_metrics.ArticleID.alias("ArticleID_NK"),
+                articles_with_text_metrics.Title.alias("ArticleTitle"),
+                articles_with_text_metrics.Description.alias("ArticleDescription"),
+                articles_with_text_metrics.PublicationDate.alias("ArticlePublicationTimestamp"),
+                articles_with_text_metrics.OpinionCount,
+                coalesce(articles_with_text_metrics.WordCountInMainContent, lit(0)).alias("WordCountInMainContent"),
+                coalesce(articles_with_text_metrics.CharacterCountInMainContent, lit(0)).alias("CharacterCountInMainContent"),
+                col("EstimatedReadTimeMinutes"),
+                coalesce(tagged_keyword_counts.TaggedKeywordCountInArticle, lit(0)).alias("TaggedKeywordCountInArticle"),
+                coalesce(reference_source_counts.ReferenceSourceCountInArticle, lit(0)).alias("ReferenceSourceCountInArticle"),
+                articles_with_text_metrics.AuthorID.alias("AuthorID_lookup"),
+                articles_with_text_metrics.TopicID.alias("TopicID_lookup"),
+                articles_with_text_metrics.SubTopicID.alias("SubTopicID_lookup")
+            )
+
+        fact_article_publication_df = fact_article_publication_source \
+            .withColumn("PublicationDateOnly", to_date(col("ArticlePublicationTimestamp"))) \
+            .join(dim_date_df, col("PublicationDateOnly") == dim_date_df.FullDateAlternateKey, "left_outer") \
+            .join(dim_author_df, col("AuthorID_lookup") == col("dim_author_cached.AuthorID_NK"), "left_outer") \
+            .join(dim_topic_df, col("TopicID_lookup") == col("dim_topic_cached.TopicID_NK"), "left_outer") \
+            .join(dim_subtopic_df, col("SubTopicID_lookup") == col("dim_subtopic_cached.SubTopicID_NK"), "left_outer") \
+            .select(
+                dim_date_df.DateKey.alias("PublicationDateKey"),
+                col("ArticlePublicationTimestamp"),
+                col("dim_author_cached.AuthorKey"),
+                col("dim_topic_cached.TopicKey"),
+                col("dim_subtopic_cached.SubTopicKey"),
+                col("ArticleID_NK"),
+                col("ArticleTitle"),
+                col("ArticleDescription"),
+                lit(1).alias("PublishedArticleCount"),
+                col("OpinionCount"),
+                col("WordCountInMainContent"),
+                col("CharacterCountInMainContent"),
+                col("EstimatedReadTimeMinutes"),
+                col("TaggedKeywordCountInArticle"),
+                col("ReferenceSourceCountInArticle")
+            ).na.fill({"PublicationDateKey": -1, "AuthorKey": -1, "TopicKey": -1, "SubTopicKey": -1})
+        
+        fact_article_publication_df.cache()
+        count_fact_articles_to_write = fact_article_publication_df.count()
+
+        if count_fact_articles_to_write > 0:
+            print("Đang tính toán số lượng bài báo theo ngày xuất bản (fact)...")
+            articles_by_date_collected = fact_article_publication_df \
+                .withColumn("PublicationDateString", date_format(col("ArticlePublicationTimestamp"), SPARK_SQL_DATE_FORMAT_PATTERN)) \
+                .groupBy("PublicationDateString") \
+                .count() \
+                .collect()
+            for row in articles_by_date_collected:
+                if row["PublicationDateString"]:
+                    g_articles_by_pub_date_count.labels(publication_date=row["PublicationDateString"]).set(row["count"])
+            print("Đã set metric số lượng bài báo theo ngày xuất bản (fact).")
+
+            print("Đang tính toán số lượng bài báo theo chủ đề (fact)...")
+            
+            projected_topics_for_join = dim_topic_df.select(
+                col("dim_topic_cached.TopicKey"),
+                col("dim_topic_cached.TopicName").alias("unique_topic_name_for_grouping")
+            )
+
+            articles_by_topic_collected = fact_article_publication_df \
+                .join(projected_topics_for_join, fact_article_publication_df.TopicKey == projected_topics_for_join.TopicKey, "inner") \
+                .groupBy("unique_topic_name_for_grouping") \
+                .count() \
+                .collect()
+
+            for row in articles_by_topic_collected:
+                if row["unique_topic_name_for_grouping"]:
+                    g_articles_by_topic_count.labels(topic_name=row["unique_topic_name_for_grouping"]).set(row["count"])
+            print("Đã set metric số lượng bài báo theo chủ đề (fact).")
+            
+            write_curated_iceberg_table(fact_article_publication_df, "fact_article_publication",
+                                        write_mode="overwrite_dynamic_partitions",
+                                        partition_cols=["ArticlePublicationTimestamp"],
+                                        is_fact_article_publication_table=True)
+        else:
+            print("Không có dữ liệu fact_article_publication để ghi hoặc tính metrics chi tiết.")
+            g_articles_records_to_write.set(0)
+            g_articles_write_duration.set(0)
+
+        fact_pub_keys_df = fact_article_publication_df.select(
+            "ArticleID_NK", 
+            col("PublicationDateKey").alias("ArticlePublicationDateKey"),
+            "AuthorKey", "TopicKey", "SubTopicKey"
+        ).distinct().cache()
+
+        print("Đang xử lý fact_article_keyword...")
+        fact_article_keyword_df = article_keywords_clean_df \
+            .join(fact_pub_keys_df.alias("fpk"), article_keywords_clean_df.ArticleID == col("fpk.ArticleID_NK"), "inner") \
+            .join(dim_keyword_df, article_keywords_clean_df.KeywordID == col("dim_keyword_cached.KeywordID_NK"), "left_outer") \
+            .select(
+                col("fpk.ArticlePublicationDateKey"),
+                col("fpk.ArticleID_NK"),
+                col("dim_keyword_cached.KeywordKey"),
+                col("fpk.AuthorKey"),
+                col("fpk.TopicKey"),
+                col("fpk.SubTopicKey"),
+                lit(1).alias("IsKeywordTaggedToArticle")
+            ).na.fill(-1, subset=["ArticlePublicationDateKey", "KeywordKey", "AuthorKey", "TopicKey", "SubTopicKey"])
+        if not fact_article_keyword_df.rdd.isEmpty():
+            write_curated_iceberg_table(fact_article_keyword_df, "fact_article_keyword",
+                                        write_mode="overwrite_dynamic_partitions",
+                                        partition_cols=["ArticlePublicationDateKey"])
+        else:
+            print("Không có dữ liệu cho fact_article_keyword.")
+
+        print("Đang xử lý fact_article_reference...")
+        fact_article_reference_df = article_references_clean_df \
+            .join(fact_pub_keys_df.alias("fpk"), article_references_clean_df.ArticleID == col("fpk.ArticleID_NK"), "inner") \
+            .join(dim_referencesource_df, article_references_clean_df.ReferenceID == col("dim_referencesource_cached.ReferenceID_NK"), "left_outer") \
+            .select(
+                col("fpk.ArticlePublicationDateKey"),
+                col("fpk.ArticleID_NK"),
+                col("dim_referencesource_cached.ReferenceSourceKey"),
+                col("fpk.AuthorKey"),
+                col("fpk.TopicKey"),
+                col("fpk.SubTopicKey"),
+                lit(1).alias("IsReferenceUsedInArticle")
+            ).na.fill(-1, subset=["ArticlePublicationDateKey", "ReferenceSourceKey", "AuthorKey", "TopicKey", "SubTopicKey"])
+        if not fact_article_reference_df.rdd.isEmpty():
+            write_curated_iceberg_table(fact_article_reference_df, "fact_article_reference",
+                                        write_mode="overwrite_dynamic_partitions",
+                                        partition_cols=["ArticlePublicationDateKey"])
+        else:
+            print("Không có dữ liệu cho fact_article_reference.")
+
+        print("Đang xử lý fact_top_comment_activity...")
+        fact_top_comment_activity_df = comments_clean_df \
+            .join(fact_pub_keys_df.alias("fpk"), comments_clean_df.ArticleID == col("fpk.ArticleID_NK"), "inner") \
+            .select(
+                col("fpk.ArticlePublicationDateKey"),
+                col("fpk.ArticlePublicationDateKey").alias("CommentDateKey"),
+                col("fpk.ArticleID_NK"),
+                comments_clean_df.CommentID.alias("CommentID_NK"),
+                col("fpk.AuthorKey"),
+                col("fpk.TopicKey"),
+                col("fpk.SubTopicKey"),
+                col("CommenterName"),
+                lit(1).alias("IsTopComment"),
+                col("TotalLikes").alias("LikesOnTopComment")
+            ).na.fill({"ArticlePublicationDateKey": -1, "CommentDateKey": -1, "AuthorKey": -1, "TopicKey": -1, "SubTopicKey": -1})
+        if not fact_top_comment_activity_df.rdd.isEmpty():
+            write_curated_iceberg_table(fact_top_comment_activity_df, "fact_top_comment_activity",
+                                        write_mode="overwrite_dynamic_partitions",
+                                        partition_cols=["ArticlePublicationDateKey"])
+        else:
+            print("Không có dữ liệu cho fact_top_comment_activity.")
+
+        print("Đang xử lý fact_top_comment_interaction_detail...")
+        fact_top_comment_interaction_detail_df = comment_interactions_for_facts_df.alias("cif") \
+            .join(comments_clean_df.select("CommentID", "ArticleID").alias("cmt"), 
+                  col("cif.CommentID") == col("cmt.CommentID"), "inner") \
+            .join(fact_pub_keys_df.alias("fpk"), 
+                  col("cmt.ArticleID") == col("fpk.ArticleID_NK"), "inner") \
+            .join(dim_interactiontype_df.alias("dit"), 
+                  col("cif.InteractionType") == col("dit.InteractionTypeName"), "left_outer") \
+            .select(
+                col("fpk.ArticlePublicationDateKey").alias("ArticlePublicationDateKey"),
+                col("fpk.ArticlePublicationDateKey").alias("InteractionDateKey"),
+                col("cmt.ArticleID").alias("ArticleID_NK"),
+                col("cif.CommentID").alias("CommentID_NK"),
+                col("dit.InteractionTypeKey"),
+                col("fpk.AuthorKey"),
+                col("fpk.TopicKey"),
+                col("fpk.SubTopicKey"),
+                lit(1).alias("InteractionInstanceCount"),
+                col("cif.InteractionCount").alias("InteractionValue")
+            ).na.fill({
+                "ArticlePublicationDateKey": -1, "InteractionDateKey": -1, "InteractionTypeKey": -1,
+                "AuthorKey": -1, "TopicKey": -1, "SubTopicKey": -1
+            })
+
+        if not fact_top_comment_interaction_detail_df.rdd.isEmpty():
+            write_curated_iceberg_table(
+                fact_top_comment_interaction_detail_df,
+                "fact_top_comment_interaction_detail",
+                write_mode="overwrite_dynamic_partitions",
+                partition_cols=["ArticlePublicationDateKey"]
+            )
+        else:
+            print("Không có dữ liệu cho fact_top_comment_interaction_detail.")
+    else:
+        print("Bỏ qua xây dựng Fact tables vì không có dữ liệu articles đầu vào.")
+        g_articles_records_to_write.set(0)
         g_articles_write_duration.set(0)
 
-    fact_pub_keys_df = fact_article_publication_df.select(
-        "ArticleID_NK", 
-        col("PublicationDateKey").alias("ArticlePublicationDateKey"),
-        "AuthorKey", "TopicKey", "SubTopicKey"
-    ).distinct().cache()
-
-
-    print("Đang xử lý fact_article_keyword...")
-    fact_article_keyword_df = article_keywords_clean_df \
-        .join(fact_pub_keys_df.alias("fpk"), article_keywords_clean_df.ArticleID == col("fpk.ArticleID_NK"), "inner") \
-        .join(dim_keyword_df, article_keywords_clean_df.KeywordID == col("dim_keyword_cached.KeywordID_NK"), "left_outer") \
-        .select(
-            col("fpk.ArticlePublicationDateKey"),
-            col("fpk.ArticleID_NK"),
-            col("dim_keyword_cached.KeywordKey"),
-            col("fpk.AuthorKey"),
-            col("fpk.TopicKey"),
-            col("fpk.SubTopicKey"),
-            lit(1).alias("IsKeywordTaggedToArticle")
-        ).na.fill(-1, subset=["ArticlePublicationDateKey", "KeywordKey", "AuthorKey", "TopicKey", "SubTopicKey"])
-    if not fact_article_keyword_df.rdd.isEmpty():
-        write_curated_iceberg_table(fact_article_keyword_df, "fact_article_keyword",
-                                     write_mode="overwrite_dynamic_partitions",
-                                     partition_cols=["ArticlePublicationDateKey"])
-    else:
-        print("Không có dữ liệu cho fact_article_keyword.")
-
-    print("Đang xử lý fact_article_reference...")
-    fact_article_reference_df = article_references_clean_df \
-        .join(fact_pub_keys_df.alias("fpk"), article_references_clean_df.ArticleID == col("fpk.ArticleID_NK"), "inner") \
-        .join(dim_referencesource_df, article_references_clean_df.ReferenceID == col("dim_referencesource_cached.ReferenceID_NK"), "left_outer") \
-        .select(
-            col("fpk.ArticlePublicationDateKey"),
-            col("fpk.ArticleID_NK"),
-            col("dim_referencesource_cached.ReferenceSourceKey"),
-            col("fpk.AuthorKey"),
-            col("fpk.TopicKey"),
-            col("fpk.SubTopicKey"),
-            lit(1).alias("IsReferenceUsedInArticle")
-        ).na.fill(-1, subset=["ArticlePublicationDateKey", "ReferenceSourceKey", "AuthorKey", "TopicKey", "SubTopicKey"])
-    if not fact_article_reference_df.rdd.isEmpty():
-        write_curated_iceberg_table(fact_article_reference_df, "fact_article_reference",
-                                     write_mode="overwrite_dynamic_partitions",
-                                     partition_cols=["ArticlePublicationDateKey"])
-    else:
-        print("Không có dữ liệu cho fact_article_reference.")
-
-    print("Đang xử lý fact_top_comment_activity...")
-    fact_top_comment_activity_df = comments_clean_df \
-        .join(fact_pub_keys_df.alias("fpk"), comments_clean_df.ArticleID == col("fpk.ArticleID_NK"), "inner") \
-        .select(
-            col("fpk.ArticlePublicationDateKey"),
-            col("fpk.ArticlePublicationDateKey").alias("CommentDateKey"),
-            col("fpk.ArticleID_NK"),
-            comments_clean_df.CommentID.alias("CommentID_NK"),
-            col("fpk.AuthorKey"),
-            col("fpk.TopicKey"),
-            col("fpk.SubTopicKey"),
-            col("CommenterName"),
-            lit(1).alias("IsTopComment"),
-            col("TotalLikes").alias("LikesOnTopComment")
-        ).na.fill({"ArticlePublicationDateKey": -1, "CommentDateKey": -1, "AuthorKey": -1, "TopicKey": -1, "SubTopicKey": -1})
-    if not fact_top_comment_activity_df.rdd.isEmpty():
-        write_curated_iceberg_table(fact_top_comment_activity_df, "fact_top_comment_activity",
-                                     write_mode="overwrite_dynamic_partitions",
-                                     partition_cols=["ArticlePublicationDateKey"])
-    else:
-        print("Không có dữ liệu cho fact_top_comment_activity.")
-
-    print("Đang xử lý fact_top_comment_interaction_detail...")
-    fact_top_comment_interaction_detail_df = comment_interactions_for_facts_df.alias("cif") \
-        .join(comments_clean_df.select("CommentID", "ArticleID").alias("cmt"), 
-              col("cif.CommentID") == col("cmt.CommentID"), "inner") \
-        .join(fact_pub_keys_df.alias("fpk"), 
-              col("cmt.ArticleID") == col("fpk.ArticleID_NK"), "inner") \
-        .join(dim_interactiontype_df.alias("dit"), 
-              col("cif.InteractionType") == col("dit.InteractionTypeName"), "left_outer") \
-        .select(
-            col("fpk.ArticlePublicationDateKey").alias("ArticlePublicationDateKey"),
-            col("fpk.ArticlePublicationDateKey").alias("InteractionDateKey"),
-            col("cmt.ArticleID").alias("ArticleID_NK"),
-            col("cif.CommentID").alias("CommentID_NK"),
-            col("dit.InteractionTypeKey"),
-            col("fpk.AuthorKey"),
-            col("fpk.TopicKey"),
-            col("fpk.SubTopicKey"),
-            lit(1).alias("InteractionInstanceCount"),
-            col("cif.InteractionCount").alias("InteractionValue")
-        ).na.fill({
-            "ArticlePublicationDateKey": -1, "InteractionDateKey": -1, "InteractionTypeKey": -1,
-            "AuthorKey": -1, "TopicKey": -1, "SubTopicKey": -1
-        })
-
-    if not fact_top_comment_interaction_detail_df.rdd.isEmpty():
-        write_curated_iceberg_table(
-            fact_top_comment_interaction_detail_df,
-            "fact_top_comment_interaction_detail",
-            write_mode="overwrite_dynamic_partitions",
-            partition_cols=["ArticlePublicationDateKey"]
-        )
-    else:
-        print("Không có dữ liệu cho fact_top_comment_interaction_detail.")
-
-    print(f"\n--- Hoàn thành quy trình ETL từ Clean sang Curated cho khoảng ngày {start_date_process.strftime('%Y-%m-%d')} đến {end_date_process.strftime('%Y-%m-%d')} ---")
+    print(f"\n--- Hoàn thành quy trình ETL từ Clean sang Curated cho khoảng ngày {start_date_process.strftime(PYTHON_DATE_FORMAT_PATTERN)} đến {end_date_process.strftime(PYTHON_DATE_FORMAT_PATTERN)} ---")
     job_succeeded_flag = True
 
 except SystemExit as se:
@@ -585,7 +609,6 @@ except SystemExit as se:
 except ValueError as ve:
     print(f"LỖI VALUE ERROR (ví dụ: định dạng ngày): {ve}")
     job_succeeded_flag = False
-    if 'g_job_status' in globals(): g_job_status.set(0)
 except Exception as e:
     print(f"LỖI CHÍNH TRONG QUÁ TRÌNH ETL: {e}")
     import traceback
@@ -601,18 +624,7 @@ finally:
         g_job_status.set(1)
         g_job_last_success_ts.set(int(time.time()))
     else:
-        current_status_val = 1 
-        try:
-            if 'g_job_status' in globals() and hasattr(g_job_status, '_value'):
-                current_status_val = g_job_status._value
-            elif 'g_job_status' in globals():
-                g_job_status.set(0)
-                current_status_val = 0
-        except AttributeError:
-            pass 
-        
-        if current_status_val != 0:
-            if 'g_job_status' in globals(): g_job_status.set(0)
+        g_job_status.set(0)
 
     if actual_start_date_process_for_metric:
         g_processed_date_start_ts.set(int(actual_start_date_process_for_metric.timestamp()))
@@ -622,17 +634,19 @@ finally:
     push_metrics_to_gateway()
 
     if 'spark' in locals() and spark:
-        for df_name_key, df_val in cached_dataframes.items():
-            try:
-                df_val.unpersist()
-                print(f"Đã unpersist DataFrame: {df_name_key}")
-            except Exception as unpersist_e:
-                print(f"Lỗi khi unpersist {df_name_key}: {unpersist_e}")
+        for df_name_key in list(cached_dataframes.keys()):
+            df_val = cached_dataframes.pop(df_name_key, None)
+            if df_val:
+                try:
+                    df_val.unpersist()
+                    print(f"Đã unpersist DataFrame từ cache: {df_name_key}")
+                except Exception as unpersist_e:
+                    print(f"Lỗi khi unpersist {df_name_key}: {unpersist_e}")
         
-        if 'fact_article_publication_df' in locals() and fact_article_publication_df.is_cached:
+        if 'fact_article_publication_df' in locals() and 'is_cached' in dir(fact_article_publication_df) and fact_article_publication_df.is_cached:
             fact_article_publication_df.unpersist()
             print("Đã unpersist fact_article_publication_df")
-        if 'fact_pub_keys_df' in locals() and fact_pub_keys_df.is_cached:
+        if 'fact_pub_keys_df' in locals() and 'is_cached' in dir(fact_pub_keys_df) and fact_pub_keys_df.is_cached:
             fact_pub_keys_df.unpersist()
             print("Đã unpersist fact_pub_keys_df")
 
