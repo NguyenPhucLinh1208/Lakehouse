@@ -17,6 +17,7 @@ x-airflow-common:
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    _AIRFLOW_BUILTIN_USER_GROUP_ID: '1001'
   volumes:
     - .:/opt
     - ../../../../../var/run/docker.sock:/var/run/docker.sock

@@ -1,19 +1,20 @@
 from pyspark.sql import SparkSession
+import os
+from dotenv import load_dotenv
 
-minio_endpoint = "http://minio1:9000"
-from pyspark.sql import SparkSession
+load_dotenv()
 
-minio_endpoint = "http://minio1:9000"
-minio_access_key = "rH4arFLYBxl55rh2zmN1"
-minio_secret_key = "AtEB2XiMAznxvJXRvaXxigdIewIMVKscgPg7dJjI"
-nessie_uri = "http://nessie:19120/api/v2"
-nessie_default_branch = "main"
+minio_endpoint = os.getenv("MINIO_ENDPOINT")
+minio_access_key = os.getenv("MINIO_ACCESS_KEY")
+minio_secret_key = os.getenv("MINIO_SECRET_KEY")
+nessie_uri = os.getenv("NESSIE_URI")
+nessie_default_branch = os.getenv("NESSIE_DEFAULT_BRANCH")
 
 curated_catalog_name = "nessie-curated-news"
 curated_catalog_warehouse_path = "s3a://curated-news-lakehouse/nessie_curated_news_warehouse"
 CURATED_DATABASE_NAME = "news_curated_db"
 
-app_name = "IcebergNessieCuratedNewsSchemaFinalPreciseComments"
+app_name = "IcebergNessieCuratedNewsSchema"
 
 spark_builder = SparkSession.builder.appName(app_name)
 
@@ -35,7 +36,7 @@ spark_builder = spark_builder.config(f"spark.sql.catalog.{curated_catalog_name}"
 spark = spark_builder.getOrCreate()
 spark.sparkContext.setLogLevel("WARN")
 
-print("SparkSession đã được khởi tạo cho việc thiết lập vùng Curated (phiên bản cuối cùng).")
+print("SparkSession đã được khởi tạo cho việc thiết lập vùng Curated.")
 print(f"Cấu hình cho Spark Catalog '{curated_catalog_name}':")
 print(f"  Implementation: {spark.conf.get(f'spark.sql.catalog.{curated_catalog_name}.catalog-impl')}")
 print(f"  Nessie Tool URI: {spark.conf.get(f'spark.sql.catalog.{curated_catalog_name}.uri')}")

@@ -31,6 +31,7 @@ app_name = "NewsETLRawToClean"
 VIETNAM_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 DATE_FORMAT_PATTERN = "%Y-%m-%d"
 
+# --- Các phần cấu hình và khởi tạo job giữ nguyên ---
 arg_parser = argparse.ArgumentParser(description="Tham số cho ngày bắt đầu và kết thúc cho ETL")
 arg_parser.add_argument(
     "--etl-start-date",
@@ -115,7 +116,8 @@ spark_builder = spark_builder.config("spark.hadoop.fs.s3a.endpoint", minio_endpo
     .config(f"spark.sql.catalog.{clean_catalog_name}.warehouse", clean_catalog_warehouse_path) \
     .config(f"spark.sql.catalog.{clean_catalog_name}.authentication.type", "NONE") \
     .config("spark.sql.adaptive.enabled", "true") \
-    .config("spark.sql.session.timeZone", "Asia/Ho_Chi_Minh")
+    .config("spark.sql.session.timeZone", "Asia/Ho_Chi_Minh") \
+    .config("spark.sql.shuffle.partitions", "4")
 
 actual_start_date_for_metric = None
 actual_end_date_for_metric = None
@@ -156,6 +158,7 @@ try:
             current_date_aware += timedelta(days=1)
         return paths, _actual_start_date_aware, _actual_end_date_aware
 
+    # --- Các schema giữ nguyên ---
     raw_schema = StructType([
         StructField("title", StringType(), True), StructField("url", StringType(), True),
         StructField("description", StringType(), True), StructField("topic", StringType(), True),
@@ -170,7 +173,7 @@ try:
         StructField("tong_luot_thich", StringType(), True), StructField("chi_tiet_tuong_tac", comment_interaction_detail_schema, True)
     ])
     top_binh_luan_array_schema = ArrayType(top_binh_luan_item_schema)
-
+    
     raw_data_paths, actual_start_date_for_metric, actual_end_date_for_metric = \
         get_s3_paths_for_date_range(RAW_BASE_S3_PATH, ETL_START_DATE_STR, ETL_END_DATE_STR)
 
@@ -184,6 +187,7 @@ try:
         df_before_url_filter = spark.read.schema(raw_schema).json(raw_data_paths)
         
         raw_df_initial = df_before_url_filter.filter(col("url").isNotNull() & (trim(col("url")) != ""))
+        raw_df_initial = raw_df_initial.coalesce(4)
         
         count_raw_initial = raw_df_initial.count()
         g_valid_url_records_count.set(count_raw_initial)
@@ -199,27 +203,25 @@ try:
         read_stage_duration_val = time.time() - read_stage_start_time
         g_read_stage_duration.set(read_stage_duration_val)
 
-    raw_df_with_article_id = raw_df_initial.withColumn("ArticleID", generate_surrogate_key(col("url")))
+    raw_df_with_article_id = raw_df_initial.withColumn("ArticleID", generate_surrogate_key(col("url"))).cache()
 
     print("--- BẮT ĐẦU QUÁ TRÌNH TRANSFORM ---")
 
     print("\n--- Xử lý bảng AUTHORS ---")
-    authors_intermediate_df = raw_df_with_article_id.select(col("tac_gia").alias("AuthorName")) \
+    authors_df = raw_df_with_article_id.select(col("tac_gia").alias("AuthorName")) \
         .filter(col("AuthorName").isNotNull() & (trim(col("AuthorName")) != "")) \
-        .distinct()
-    authors_df = authors_intermediate_df \
+        .distinct() \
         .withColumn("AuthorID", generate_surrogate_key(col("AuthorName"))) \
         .select("AuthorID", "AuthorName") \
-        .dropDuplicates(["AuthorID"])
+        .cache() # TỐI ƯU: Cache để tái sử dụng
 
     print("\n--- Xử lý bảng TOPICS ---")
-    topics_intermediate_df = raw_df_with_article_id.select(col("topic").alias("TopicName")) \
+    topics_df = raw_df_with_article_id.select(col("topic").alias("TopicName")) \
         .filter(col("TopicName").isNotNull() & (trim(col("TopicName")) != "")) \
-        .distinct()
-    topics_df = topics_intermediate_df \
+        .distinct() \
         .withColumn("TopicID", generate_surrogate_key(col("TopicName"))) \
         .select("TopicID", "TopicName") \
-        .dropDuplicates(["TopicID"])
+        .cache() # TỐI ƯU: Cache để tái sử dụng
 
     print("\n--- Xử lý bảng SUBTOPICS ---")
     subtopics_intermediate_df = raw_df_with_article_id \
@@ -233,29 +235,27 @@ try:
         .join(broadcast(topics_df), subtopics_intermediate_df.ParentTopicName == topics_df.TopicName, "inner") \
         .withColumn("SubTopicID", generate_surrogate_key(col("SubTopicName"), col("TopicID"))) \
         .select(col("SubTopicID"), col("SubTopicName"), col("TopicID")) \
-        .dropDuplicates(["SubTopicID"])
+        .cache() # TỐI ƯU: Cache để tái sử dụng
 
     print("\n--- Xử lý bảng KEYWORDS (Dimension) ---")
-    keywords_dim_intermediate_df = raw_df_with_article_id \
+    keywords_dim_df = raw_df_with_article_id \
         .filter(col("tu_khoa").isNotNull() & (expr("size(tu_khoa) > 0"))) \
         .select(explode(col("tu_khoa")).alias("KeywordText")) \
         .filter(col("KeywordText").isNotNull() & (trim(col("KeywordText")) != "")) \
-        .distinct()
-    keywords_dim_df = keywords_dim_intermediate_df \
+        .distinct() \
         .withColumn("KeywordID", generate_surrogate_key(col("KeywordText"))) \
         .select("KeywordID", "KeywordText") \
-        .dropDuplicates(["KeywordID"])
+        .cache() # TỐI ƯU: Cache để tái sử dụng
 
     print("\n--- Xử lý bảng REFERENCES_TABLE (Dimension) ---")
-    references_dim_intermediate_df = raw_df_with_article_id \
+    references_dim_df = raw_df_with_article_id \
         .filter(col("tham_khao").isNotNull() & (expr("size(tham_khao) > 0"))) \
         .select(explode(col("tham_khao")).alias("ReferenceText")) \
         .filter(col("ReferenceText").isNotNull() & (trim(col("ReferenceText")) != "")) \
-        .distinct()
-    references_dim_df = references_dim_intermediate_df \
+        .distinct() \
         .withColumn("ReferenceID", generate_surrogate_key(col("ReferenceText"))) \
         .select("ReferenceID", "ReferenceText") \
-        .dropDuplicates(["ReferenceID"])
+        .cache() # TỐI ƯU: Cache để tái sử dụng
 
     print("\n--- Xử lý bảng ARTICLES ---")
     articles_base_transformed_df = raw_df_with_article_id \
@@ -289,7 +289,12 @@ try:
     articles_to_write_df.cache()
     count_articles_to_write = articles_to_write_df.count()
     g_articles_records_to_write.set(count_articles_to_write)
-
+    
+    # TỐI ƯU: Giải phóng subtopics_df sau khi đã dùng để tạo articles
+    subtopics_df.unpersist()
+    print("Đã giải phóng cache cho: subtopics_df")
+    
+    # --- Xử lý tính toán metric từ articles_to_write_df (đã cache) ---
     if count_articles_to_write > 0:
         print("Đang tính toán số lượng bài báo theo ngày xuất bản (giờ VN)...")
         articles_by_date_collected = articles_to_write_df \
@@ -337,6 +342,10 @@ try:
         .select("ArticleID", "ReferenceID") \
         .distinct()
 
+    # --- Phần xử lý comments giữ nguyên ---
+    # ...
+    # (Toàn bộ logic xử lý comments_to_write_df và comment_interactions_to_write_df giữ nguyên)
+    # ...
     print("\n--- Xử lý bảng COMMENTS và COMMENTINTERACTIONS ---")
     
     comments_parsed_base_df = raw_df_with_article_id \
@@ -367,7 +376,7 @@ try:
         StructField("LastProcessedTimestamp", TimestampType(), True)
     ])
 
-    if comments_exploded_df.rdd.isEmpty():
+    if comments_exploded_df.isEmpty():
         print("Không có dữ liệu bình luận hợp lệ để xử lý.")
         comments_to_write_df = spark.createDataFrame([], comments_schema)
         comment_interactions_to_write_df = spark.createDataFrame([], comment_interactions_schema)
@@ -394,7 +403,7 @@ try:
             .filter(col("interaction_details_map").isNotNull() & (expr("size(interaction_details_map) > 0"))) \
             .select("CommentID", "interaction_details_map")
 
-        if unique_comments_for_interactions.rdd.isEmpty():
+        if unique_comments_for_interactions.isEmpty():
             print("Không có dữ liệu chi tiết tương tác bình luận.")
             comment_interactions_to_write_df = spark.createDataFrame([], comment_interactions_schema)
         else:
@@ -421,17 +430,17 @@ try:
         if is_articles_table:
             write_start_time_local = time.time()
 
-        if df_to_write.rdd.isEmpty():
+        if df_to_write.isEmpty():
             print(f"DataFrame cho bảng '{full_table_name}' rỗng. Bỏ qua ghi.")
             if is_articles_table:
-                 g_articles_write_duration.set(0) 
+                g_articles_write_duration.set(0)
             return
 
         df_to_write.createOrReplaceTempView(temp_view_name)
         print(f"Đang chuẩn bị MERGE INTO bảng: {full_table_name} từ view {temp_view_name}")
 
         try:
-            table_exists_query_table_name = table_name_in_db.replace("_", "\\_") 
+            table_exists_query_table_name = table_name_in_db.replace("_", "\\_")
             table_exists = spark.sql(f"SHOW TABLES IN `{catalog_name}`.`{db_name}` LIKE '{table_exists_query_table_name}'").count() > 0
 
             if not table_exists:
@@ -446,7 +455,7 @@ try:
                     print(f"Đã tạo và ghi dữ liệu vào bảng '{full_table_name}' thành công.")
                 else:
                     raise RuntimeError(f"Bảng {full_table_name} không tồn tại và create_table_if_not_exists=False.")
-            else: 
+            else:
                 merge_condition_parts = [f"target.{pk_col} = source.{pk_col}" for pk_col in primary_key_cols]
                 merge_condition = " AND ".join(merge_condition_parts)
 
@@ -473,20 +482,29 @@ try:
             print(f"Đã xóa temp view: {temp_view_name}")
             if is_articles_table and write_start_time_local is not None:
                 current_metric_value = None
-                try: 
+                try:
                     current_metric_value = g_articles_write_duration._value
-                except AttributeError: 
+                except AttributeError:
                     pass
-                if current_metric_value is None: 
+                if current_metric_value is None:
                     g_articles_write_duration.set(time.time() - write_start_time_local)
 
     print("\n--- Bắt đầu ghi dữ liệu vào các bảng CLEAN sử dụng MERGE ---")
 
     write_iceberg_table_with_merge(authors_df, "authors", primary_key_cols=["AuthorID"])
+    authors_df.unpersist(); print("Đã giải phóng cache cho: authors_df")
+
     write_iceberg_table_with_merge(topics_df, "topics", primary_key_cols=["TopicID"])
+    # Giữ topics_df lại vì nó còn dùng để tính metric và join với subtopics
+
     write_iceberg_table_with_merge(subtopics_df, "subtopics", primary_key_cols=["SubTopicID"])
+    # subtopics_df đã được giải phóng sớm hơn
+
     write_iceberg_table_with_merge(keywords_dim_df, "keywords", primary_key_cols=["KeywordID"])
+    keywords_dim_df.unpersist(); print("Đã giải phóng cache cho: keywords_dim_df")
+
     write_iceberg_table_with_merge(references_dim_df, "references_table", primary_key_cols=["ReferenceID"])
+    references_dim_df.unpersist(); print("Đã giải phóng cache cho: references_dim_df")
     
     if count_articles_to_write > 0:
         write_iceberg_table_with_merge(articles_to_write_df, "articles",
@@ -497,6 +515,9 @@ try:
         print("Không có dữ liệu articles để ghi.")
         g_articles_write_duration.set(0)
 
+    # Giải phóng topics_df sau khi nó đã được dùng lần cuối để tính metric và ghi
+    topics_df.unpersist(); print("Đã giải phóng cache cho: topics_df")
+    
     write_iceberg_table_with_merge(article_keywords_final_df, "article_keywords", primary_key_cols=["ArticleID", "KeywordID"])
     write_iceberg_table_with_merge(article_references_final_df, "article_references", primary_key_cols=["ArticleID", "ReferenceID"])
     
@@ -508,17 +529,17 @@ try:
 
 except SystemExit as se:
     print(f"Job dừng chủ động: {se}")
-    job_succeeded_flag = False 
+    job_succeeded_flag = False
 except Exception as e:
     print(f"LỖI CHÍNH TRONG QUÁ TRÌNH ETL: {e}")
-    traceback.print_exc() 
+    traceback.print_exc()
     job_succeeded_flag = False
 finally:
     overall_job_duration = time.time() - overall_job_start_time
     g_job_duration.set(overall_job_duration)
 
     if job_succeeded_flag:
-        g_job_status.set(1) 
+        g_job_status.set(1)
         g_job_last_success_ts.set(int(time.time()))
     else:
         g_job_status.set(0)
@@ -531,9 +552,10 @@ finally:
     push_metrics_to_gateway()
 
     if 'spark' in locals() and spark:
+        # Hầu hết các cache đã được giải phóng sớm, lệnh unpersist cuối cùng này chỉ để dọn dẹp nốt
         if 'articles_to_write_df' in locals() and \
-           hasattr(articles_to_write_df, 'storageLevel') and \
-           articles_to_write_df.storageLevel.useMemory:
+          hasattr(articles_to_write_df, 'storageLevel') and \
+          articles_to_write_df.storageLevel.useMemory:
                 articles_to_write_df.unpersist()
                 print("Đã unpersist articles_to_write_df.")
         spark.stop()

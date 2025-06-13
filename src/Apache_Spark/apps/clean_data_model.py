@@ -1,16 +1,20 @@
 from pyspark.sql import SparkSession
+import os
+from dotenv import load_dotenv
 
-minio_endpoint = "http://minio1:9000"
-minio_access_key = "rH4arFLYBxl55rh2zmN1"
-minio_secret_key = "AtEB2XiMAznxvJXRvaXxigdIewIMVKscgPg7dJjI"
-nessie_uri = "http://nessie:19120/api/v2"
-nessie_default_branch = "main"
+load_dotenv()
+
+minio_endpoint = os.getenv("MINIO_ENDPOINT")
+minio_access_key = os.getenv("MINIO_ACCESS_KEY")
+minio_secret_key = os.getenv("MINIO_SECRET_KEY")
+nessie_uri = os.getenv("NESSIE_URI")
+nessie_default_branch = os.getenv("NESSIE_DEFAULT_BRANCH")
 
 clean_catalog_name = "nessie-clean-news"
 clean_catalog_warehouse_path = "s3a://clean-news-lakehouse/nessie_clean_news_warehouse"
 CLEAN_DATABASE_NAME = "news_clean_db"
 
-app_name = "IcebergNessieCleanNewsSchemaWithPreciseComments"
+app_name = "IcebergNessieCleanNewsSchema"
 
 spark_builder = SparkSession.builder.appName(app_name)
 
@@ -32,7 +36,7 @@ spark_builder = spark_builder.config(f"spark.sql.catalog.{clean_catalog_name}", 
 spark = spark_builder.getOrCreate()
 spark.sparkContext.setLogLevel("WARN")
 
-print("SparkSession đã được khởi tạo cho việc thiết lập vùng Clean với comments chi tiết.")
+print("SparkSession đã được khởi tạo cho việc thiết lập vùng Clean.")
 print(f"Cấu hình cho Spark Catalog '{clean_catalog_name}':")
 print(f"  Implementation: {spark.conf.get(f'spark.sql.catalog.{clean_catalog_name}.catalog-impl')}")
 print(f"  Nessie Tool URI: {spark.conf.get(f'spark.sql.catalog.{clean_catalog_name}.uri')}")
@@ -169,5 +173,5 @@ comment_interactions_fields = [
 comment_interactions_table_comment = "Lưu trữ số lượng chi tiết cho từng loại tương tác của mỗi bình luận. Dữ liệu được `explode` từ map `chi_tiet_tuong_tac`."
 create_iceberg_table_in_db("comment_interactions", comment_interactions_fields, comment_interactions_table_comment, CLEAN_DATABASE_NAME)
 
-print(f"Hoàn tất việc tạo/cập nhật schema các bảng với comments chi tiết trong database '{CLEAN_DATABASE_NAME}' của catalog '{clean_catalog_name}'.")
+print(f"Hoàn tất việc tạo/cập nhật schema các bảng trong database '{CLEAN_DATABASE_NAME}' của catalog '{clean_catalog_name}'.")
 spark.stop()

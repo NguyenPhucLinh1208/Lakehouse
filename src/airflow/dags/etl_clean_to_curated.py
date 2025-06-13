@@ -43,15 +43,16 @@ with DAG(
     },
 ) as dag:
  
-    spark_submit_cmd = f"{SPARK_SUBMIT_PATH_IN_CLIENT_IMAGE} " \
-                       f"--master spark://spark-master:7077 " \
-                       f"--deploy-mode client " \
-                       f"--name airflow_docker_etl_param_{{{{ run_id }}}} " \
-                       f"--jars {JARS_STRING_FOR_SPARK_SUBMIT} " \
-                       f"--verbose " \
-                       f"{APPLICATION_PATH_IN_CONTAINER}"
+    spark_submit_cmd = (f"{SPARK_SUBMIT_PATH_IN_CLIENT_IMAGE} "
+                        f"--master spark://spark-master:7077 "
+                        f"--deploy-mode client "
+                        f"--name airflow_docker_etl_param_{{{{ run_id }}}} "
+                        f"--jars {JARS_STRING_FOR_SPARK_SUBMIT} "
+                        f"--verbose "
+                        f"{APPLICATION_PATH_IN_CONTAINER}")
 
     # Thêm tham số nếu được cung cấp
+    # Lưu ý: Logic này được thực thi khi Airflow parse DAG, không phải lúc task chạy.
     if "{{ params.etl_start_date }}" != "None":
         spark_submit_cmd += f" --etl-start-date {{{{ params.etl_start_date }}}}"
     if "{{ params.etl_end_date }}" != "None":
@@ -64,7 +65,7 @@ with DAG(
         command=['bash', '-c', spark_submit_cmd],
         docker_url="unix://var/run/docker.sock",
         network_mode="lakehouse_net",
-        auto_remove='success',
+        auto_remove='force',
         mounts=[
             Mount(
                 source=HOST_SPARK_APPS_DIR,
