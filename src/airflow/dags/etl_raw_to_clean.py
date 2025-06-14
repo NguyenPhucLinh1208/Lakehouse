@@ -51,8 +51,7 @@ with DAG(
                         f"--verbose "
                         f"{APPLICATION_PATH_IN_CONTAINER}")
 
-    # Thêm tham số nếu được cung cấp
-    # Lưu ý: Logic này được thực thi khi Airflow parse DAG, không phải lúc task chạy.
+
     if "{{ params.etl_start_date }}" != "None":
         spark_submit_cmd += f" --etl-start-date {{{{ params.etl_start_date }}}}"
     if "{{ params.etl_end_date }}" != "None":

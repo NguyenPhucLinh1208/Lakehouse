@@ -16,12 +16,11 @@ x-airflow-common:
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
-    AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
-    _AIRFLOW_BUILTIN_USER_GROUP_ID: '1001'
+    AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg' 
   volumes:
     - .:/opt
     - ../../../../../var/run/docker.sock:/var/run/docker.sock
-  user: "${AIRFLOW_UID}:0"
+  user: "${AIRFLOW_UID}:1001"
   env_file:
     - .env
   depends_on:
