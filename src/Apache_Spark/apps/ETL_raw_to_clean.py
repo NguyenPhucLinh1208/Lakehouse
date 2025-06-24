@@ -2,7 +2,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, explode, to_timestamp, current_timestamp,
     lit, when, expr, sha2, concat_ws, coalesce, udf, from_json, date_format,
-    trim, broadcast
+    trim, broadcast, input_file_name, regexp_extract, concat, to_date
 )
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType, TimestampType, MapType
 from datetime import datetime, timedelta
@@ -32,24 +32,9 @@ VIETNAM_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 DATE_FORMAT_PATTERN = "%Y-%m-%d"
 
 arg_parser = argparse.ArgumentParser(description="Tham số cho ngày bắt đầu và kết thúc cho ETL")
-arg_parser.add_argument(
-    "--etl-start-date",
-    type=str,
-    default=None,
-    help=f"Start date ({DATE_FORMAT_PATTERN}). Mặc định (7 ngày gần nhất tính theo giờ VN)."
-)
-arg_parser.add_argument(
-    "--etl-end-date",
-    type=str,
-    default=None,
-    help=f"End date ({DATE_FORMAT_PATTERN}). Mặc định (ngày hôm qua tính theo giờ VN)."
-)
-arg_parser.add_argument(
-    "--airflow-run-id",
-    type=str,
-    default=f"run_raw_clean_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-    help="Airflow Run ID hoặc một instance ID duy nhất cho lần chạy job."
-)
+arg_parser.add_argument("--etl-start-date", type=str, default=None)
+arg_parser.add_argument("--etl-end-date", type=str, default=None)
+arg_parser.add_argument("--airflow-run-id", type=str, default=f"run_raw_clean_{datetime.now().strftime('%Y%m%d%H%M%S')}")
 args = arg_parser.parse_args()
 
 ETL_START_DATE_STR = args.etl_start_date
@@ -186,7 +171,9 @@ try:
         print(f"Đang đọc dữ liệu raw từ các đường dẫn: {raw_data_paths}")
         df_before_url_filter = spark.read.schema(raw_schema).json(raw_data_paths)
         
-        raw_df_initial = df_before_url_filter.filter(col("url").isNotNull() & (trim(col("url")) != ""))
+        df_with_path = df_before_url_filter.withColumn("input_path", input_file_name())
+
+        raw_df_initial = df_with_path.filter(col("url").isNotNull() & (trim(col("url")) != ""))
         raw_df_initial = raw_df_initial.coalesce(4)
         
         count_raw_initial = raw_df_initial.count()
@@ -259,8 +246,18 @@ try:
         .cache()
 
     print("\n--- Xử lý bảng ARTICLES ---")
+    path_regex = r".*/(\d{4})/(\d{2})/(\d{2})/.*"
     articles_base_transformed_df = raw_df_with_article_id \
-        .withColumn("PublicationDate", to_timestamp(col("ngay_xuat_ban"))) \
+        .withColumn("date_str_from_path",
+            concat(
+                regexp_extract(col("input_path"), path_regex, 1), lit("-"),
+                regexp_extract(col("input_path"), path_regex, 2), lit("-"),
+                regexp_extract(col("input_path"), path_regex, 3)
+            )
+        ) \
+        .withColumn("PublicationDate",
+            to_date(col("date_str_from_path"), "yyyy-MM-dd").cast(TimestampType())
+        ) \
         .withColumn("OpinionCount", coalesce(col("y_kien").cast(IntegerType()), lit(0)))
 
     articles_base_aliased = articles_base_transformed_df.alias("base")
@@ -412,7 +409,6 @@ try:
                 .withColumn("LastProcessedTimestamp", current_timestamp()) \
                 .dropDuplicates(["CommentInteractionID"])
 
-
     def write_iceberg_table_with_merge(df_to_write, table_name_in_db, primary_key_cols,
                                        db_name=CLEAN_DATABASE_NAME, catalog_name=clean_catalog_name,
                                        partition_cols=None, create_table_if_not_exists=True):
@@ -451,14 +447,22 @@ try:
                 merge_condition_parts = [f"target.{pk_col} = source.{pk_col}" for pk_col in primary_key_cols]
                 merge_condition = " AND ".join(merge_condition_parts)
 
+                source_columns = df_to_write.columns
+                
+                update_set_parts = [f"target.`{col_name}` = source.`{col_name}`" for col_name in source_columns]
+                update_set_clause = ", ".join(update_set_parts)
+
+                insert_columns = ", ".join([f"`{col_name}`" for col_name in source_columns])
+                insert_values = ", ".join([f"source.`{col_name}`" for col_name in source_columns])
+
                 merge_sql = f"""
                 MERGE INTO {full_table_name} AS target
                 USING {temp_view_name} AS source
                 ON {merge_condition}
                 WHEN MATCHED THEN
-                    UPDATE SET *
+                    UPDATE SET {update_set_clause}
                 WHEN NOT MATCHED THEN
-                    INSERT *
+                    INSERT ({insert_columns}) VALUES ({insert_values})
                 """
                 print(f"Thực thi MERGE SQL cho {full_table_name}: \n{merge_sql}")
                 spark.sql(merge_sql)
