@@ -171,9 +171,7 @@ try:
         print(f"Đang đọc dữ liệu raw từ các đường dẫn: {raw_data_paths}")
         df_before_url_filter = spark.read.schema(raw_schema).json(raw_data_paths)
         
-        df_with_path = df_before_url_filter.withColumn("input_path", input_file_name())
-
-        raw_df_initial = df_with_path.filter(col("url").isNotNull() & (trim(col("url")) != ""))
+        raw_df_initial = df_before_url_filter.filter(col("url").isNotNull() & (trim(col("url")) != ""))
         raw_df_initial = raw_df_initial.coalesce(4)
         
         count_raw_initial = raw_df_initial.count()
@@ -246,8 +244,10 @@ try:
         .cache()
 
     print("\n--- Xử lý bảng ARTICLES ---")
+    raw_df_with_path_for_articles = raw_df_with_article_id.withColumn("input_path", input_file_name())
+    
     path_regex = r".*/(\d{4})/(\d{2})/(\d{2})/.*"
-    articles_base_transformed_df = raw_df_with_article_id \
+    articles_base_transformed_df = raw_df_with_path_for_articles \
         .withColumn("date_str_from_path",
             concat(
                 regexp_extract(col("input_path"), path_regex, 1), lit("-"),
@@ -270,6 +270,7 @@ try:
               (col("top.TopicID") == col("sub.TopicID")),
               "left_outer")
 
+    # <<< SỬA LỖI: Đã loại bỏ cột LastProcessedTimestamp khỏi câu lệnh select >>>
     articles_to_write_df = articles_joined_df.select(
         col("base.ArticleID"),
         col("base.title").alias("Title"),
@@ -280,8 +281,7 @@ try:
         col("base.OpinionCount"),
         col("auth.AuthorID").alias("AuthorID"),
         col("top.TopicID").alias("TopicID"),
-        col("sub.SubTopicID").alias("SubTopicID"),
-        current_timestamp().alias("LastProcessedTimestamp")
+        col("sub.SubTopicID").alias("SubTopicID")
     ).dropDuplicates(["ArticleID"])
 
     articles_to_write_df.cache()
@@ -355,15 +355,15 @@ try:
         .filter(col("parsed_comments_array").isNotNull()) \
         .select(col("ArticleID"), explode(col("parsed_comments_array")).alias("comment_data"))
 
+    # <<< SỬA LỖI: Đã loại bỏ cột LastProcessedTimestamp khỏi schema >>>
     comments_schema = StructType([
         StructField("CommentID", StringType(), True), StructField("ArticleID", StringType(), True),
         StructField("CommenterName", StringType(), True), StructField("CommentContent", StringType(), True),
-        StructField("TotalLikes", IntegerType(), True), StructField("LastProcessedTimestamp", TimestampType(), True)
+        StructField("TotalLikes", IntegerType(), True)
     ])
     comment_interactions_schema = StructType([
         StructField("CommentInteractionID", StringType(), True), StructField("CommentID", StringType(), True),
-        StructField("InteractionType", StringType(), True), StructField("InteractionCount", IntegerType(), True),
-        StructField("LastProcessedTimestamp", TimestampType(), True)
+        StructField("InteractionType", StringType(), True), StructField("InteractionCount", IntegerType(), True)
     ])
 
     if comments_exploded_df.isEmpty():
@@ -384,10 +384,9 @@ try:
         comments_final_df = comments_intermediate_df \
             .select("CommentID", "ArticleID", "CommenterName", "CommentContent", "TotalLikes", "interaction_details_map") \
             .dropDuplicates(["CommentID"])
-
-        comments_to_write_df = comments_final_df \
-            .withColumn("LastProcessedTimestamp", current_timestamp()) \
-            .drop("interaction_details_map")
+        
+        # <<< SỬA LỖI: Đã loại bỏ việc thêm cột LastProcessedTimestamp >>>
+        comments_to_write_df = comments_final_df.drop("interaction_details_map")
 
         unique_comments_for_interactions = comments_final_df \
             .filter(col("interaction_details_map").isNotNull() & (expr("size(interaction_details_map) > 0"))) \
@@ -403,10 +402,10 @@ try:
             comment_interactions_intermediate_df = comment_interactions_exploded_df \
                 .withColumn("InteractionCount", coalesce(col("InteractionCountStr").cast(IntegerType()), lit(0)))
             
+            # <<< SỬA LỖI: Đã loại bỏ việc thêm cột LastProcessedTimestamp >>>
             comment_interactions_to_write_df = comment_interactions_intermediate_df \
                 .withColumn("CommentInteractionID", generate_surrogate_key(col("CommentID"), col("InteractionType"))) \
                 .select("CommentInteractionID", "CommentID", "InteractionType", "InteractionCount") \
-                .withColumn("LastProcessedTimestamp", current_timestamp()) \
                 .dropDuplicates(["CommentInteractionID"])
 
     def write_iceberg_table_with_merge(df_to_write, table_name_in_db, primary_key_cols,
