@@ -25,6 +25,8 @@ nessie_default_branch = os.getenv("NESSIE_DEFAULT_BRANCH")
 clean_catalog_name = "nessie-clean-news"
 clean_catalog_warehouse_path = "s3a://clean-news-lakehouse/nessie_clean_news_warehouse"
 CLEAN_DATABASE_NAME = "news_clean_db"
+# Thêm đường dẫn cho file tạm
+TEMP_S3_PATH = "s3a://clean-news-lakehouse/temp"
 
 app_name = "NewsETLRawToClean"
 
@@ -270,7 +272,6 @@ try:
               (col("top.TopicID") == col("sub.TopicID")),
               "left_outer")
 
-    # <<< SỬA LỖI: Đã loại bỏ cột LastProcessedTimestamp khỏi câu lệnh select >>>
     articles_to_write_df = articles_joined_df.select(
         col("base.ArticleID"),
         col("base.title").alias("Title"),
@@ -355,7 +356,6 @@ try:
         .filter(col("parsed_comments_array").isNotNull()) \
         .select(col("ArticleID"), explode(col("parsed_comments_array")).alias("comment_data"))
 
-    # <<< SỬA LỖI: Đã loại bỏ cột LastProcessedTimestamp khỏi schema >>>
     comments_schema = StructType([
         StructField("CommentID", StringType(), True), StructField("ArticleID", StringType(), True),
         StructField("CommenterName", StringType(), True), StructField("CommentContent", StringType(), True),
@@ -385,7 +385,6 @@ try:
             .select("CommentID", "ArticleID", "CommenterName", "CommentContent", "TotalLikes", "interaction_details_map") \
             .dropDuplicates(["CommentID"])
         
-        # <<< SỬA LỖI: Đã loại bỏ việc thêm cột LastProcessedTimestamp >>>
         comments_to_write_df = comments_final_df.drop("interaction_details_map")
 
         unique_comments_for_interactions = comments_final_df \
@@ -402,7 +401,6 @@ try:
             comment_interactions_intermediate_df = comment_interactions_exploded_df \
                 .withColumn("InteractionCount", coalesce(col("InteractionCountStr").cast(IntegerType()), lit(0)))
             
-            # <<< SỬA LỖI: Đã loại bỏ việc thêm cột LastProcessedTimestamp >>>
             comment_interactions_to_write_df = comment_interactions_intermediate_df \
                 .withColumn("CommentInteractionID", generate_surrogate_key(col("CommentID"), col("InteractionType"))) \
                 .select("CommentInteractionID", "CommentID", "InteractionType", "InteractionCount") \
@@ -494,8 +492,25 @@ try:
     write_iceberg_table_with_merge(references_dim_df, "references_table", primary_key_cols=["ReferenceID"])
     references_dim_df.unpersist(); print("Đã giải phóng cache cho: references_dim_df")
     
+    # <<< SỬA LỖI: Áp dụng chiến lược ghi-và-đọc-lại để phá vỡ lineage >>>
     if count_articles_to_write > 0:
-        write_iceberg_table_with_merge(articles_to_write_df, "articles",
+        # 1. Định nghĩa đường dẫn tạm thời
+        temp_articles_path = f"{TEMP_S3_PATH}/articles_for_merge/{INSTANCE_ID}"
+        print(f"Chuẩn bị ghi dữ liệu articles vào đường dẫn tạm: {temp_articles_path} để phá vỡ lineage")
+
+        # 2. Ghi DataFrame không xác định vào vị trí tạm
+        articles_to_write_df.write.mode("overwrite").parquet(temp_articles_path)
+        print("Đã ghi thành công vào vị trí tạm.")
+        articles_to_write_df.unpersist() # Giải phóng cache của DF cũ
+        print("Đã giải phóng cache cho: articles_to_write_df (trước khi đọc lại)")
+
+        # 3. Đọc lại dữ liệu từ vị trí tạm để có một DataFrame "sạch"
+        print("Đang đọc lại dữ liệu từ vị trí tạm...")
+        articles_to_write_clean_df = spark.read.parquet(temp_articles_path)
+        print("Đã đọc lại thành công.")
+        
+        # 4. Sử dụng DataFrame sạch cho thao tác MERGE
+        write_iceberg_table_with_merge(articles_to_write_clean_df, "articles",
                                        primary_key_cols=["ArticleID"],
                                        partition_cols=["PublicationDate"])
     else:
@@ -539,6 +554,7 @@ finally:
     push_metrics_to_gateway()
 
     if 'spark' in locals() and spark:
+        # Giải phóng cache của dataframe cuối cùng nếu nó tồn tại
         if 'articles_to_write_df' in locals() and \
          hasattr(articles_to_write_df, 'storageLevel') and \
          articles_to_write_df.storageLevel.useMemory:
