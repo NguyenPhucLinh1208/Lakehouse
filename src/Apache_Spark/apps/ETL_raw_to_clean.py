@@ -25,8 +25,6 @@ nessie_default_branch = os.getenv("NESSIE_DEFAULT_BRANCH")
 clean_catalog_name = "nessie-clean-news"
 clean_catalog_warehouse_path = "s3a://clean-news-lakehouse/nessie_clean_news_warehouse"
 CLEAN_DATABASE_NAME = "news_clean_db"
-# Thêm đường dẫn cho file tạm
-TEMP_S3_PATH = "s3a://clean-news-lakehouse/temp"
 
 app_name = "NewsETLRawToClean"
 
@@ -246,19 +244,10 @@ try:
         .cache()
 
     print("\n--- Xử lý bảng ARTICLES ---")
-    raw_df_with_path_for_articles = raw_df_with_article_id.withColumn("input_path", input_file_name())
     
-    path_regex = r".*/(\d{4})/(\d{2})/(\d{2})/.*"
-    articles_base_transformed_df = raw_df_with_path_for_articles \
-        .withColumn("date_str_from_path",
-            concat(
-                regexp_extract(col("input_path"), path_regex, 1), lit("-"),
-                regexp_extract(col("input_path"), path_regex, 2), lit("-"),
-                regexp_extract(col("input_path"), path_regex, 3)
-            )
-        ) \
+    articles_base_transformed_df = raw_df_with_article_id \
         .withColumn("PublicationDate",
-            to_date(col("date_str_from_path"), "yyyy-MM-dd").cast(TimestampType())
+            to_date(col("ngay_xuat_ban")).cast(TimestampType())
         ) \
         .withColumn("OpinionCount", coalesce(col("y_kien").cast(IntegerType()), lit(0)))
 
@@ -492,30 +481,31 @@ try:
     write_iceberg_table_with_merge(references_dim_df, "references_table", primary_key_cols=["ReferenceID"])
     references_dim_df.unpersist(); print("Đã giải phóng cache cho: references_dim_df")
     
-    # <<< SỬA LỖI: Áp dụng chiến lược ghi-và-đọc-lại để phá vỡ lineage >>>
+    # =================================================================================
+    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< PHẦN TỐI ƯU >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    #
+    # LOGIC CŨ (đã xóa):
+    # - Ghi DataFrame `articles_to_write_df` vào một đường dẫn tạm trên S3.
+    # - Đọc lại dữ liệu từ đường dẫn tạm đó vào một DataFrame mới.
+    # - Việc này nhằm mục đích "phá vỡ kế hoạch thực thi" (break lineage) để
+    #   tăng tính ổn định nhưng làm tăng I/O.
+    #
+    # LOGIC MỚI (đã áp dụng):
+    # - Ghi trực tiếp DataFrame `articles_to_write_df` vào bảng Iceberg.
+    # - Loại bỏ hoàn toàn bước ghi/đọc file tạm để giảm I/O và tăng tốc độ xử lý.
+    #
     if count_articles_to_write > 0:
-        # 1. Định nghĩa đường dẫn tạm thời
-        temp_articles_path = f"{TEMP_S3_PATH}/articles_for_merge/{INSTANCE_ID}"
-        print(f"Chuẩn bị ghi dữ liệu articles vào đường dẫn tạm: {temp_articles_path} để phá vỡ lineage")
-
-        # 2. Ghi DataFrame không xác định vào vị trí tạm
-        articles_to_write_df.write.mode("overwrite").parquet(temp_articles_path)
-        print("Đã ghi thành công vào vị trí tạm.")
-        articles_to_write_df.unpersist() # Giải phóng cache của DF cũ
-        print("Đã giải phóng cache cho: articles_to_write_df (trước khi đọc lại)")
-
-        # 3. Đọc lại dữ liệu từ vị trí tạm để có một DataFrame "sạch"
-        print("Đang đọc lại dữ liệu từ vị trí tạm...")
-        articles_to_write_clean_df = spark.read.parquet(temp_articles_path)
-        print("Đã đọc lại thành công.")
-        
-        # 4. Sử dụng DataFrame sạch cho thao tác MERGE
-        write_iceberg_table_with_merge(articles_to_write_clean_df, "articles",
+        write_iceberg_table_with_merge(articles_to_write_df, "articles",
                                        primary_key_cols=["ArticleID"],
                                        partition_cols=["PublicationDate"])
     else:
         print("Không có dữ liệu articles để ghi.")
 
+    articles_to_write_df.unpersist(); print("Đã giải phóng cache cho: articles_to_write_df")
+    #
+    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< KẾT THÚC TỐI ƯU >>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # =================================================================================
+    
     topics_df.unpersist(); print("Đã giải phóng cache cho: topics_df")
     
     write_iceberg_table_with_merge(article_keywords_final_df, "article_keywords", primary_key_cols=["ArticleID", "KeywordID"])
@@ -562,3 +552,4 @@ finally:
                 print("Đã unpersist articles_to_write_df.")
         spark.stop()
         print("Spark session đã được dừng.")
+
